@@ -1,0 +1,6 @@
+{
+  "name": "Bombay Motors Showroom",
+  "description": "A certified pre-owned luxury car showroom dashboard and inventory catalogue for managing listings, CRM client leads pipelines, auto appraisals, and detailed mechanical bumper inspection specs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,269 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with administrative details and role assignment",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The unique identifier of the user"
+        },
+        "email": {
+          "type": "string",
+          "description": "The email address of the user"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The display name of the user"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "user"],
+          "description": "The privilege tier of the user"
+        }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "A vehicle listing in the dealership stock",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The unique vehicle listing identifier"
+        },
+        "make": {
+          "type": "string",
+          "description": "The manufacturer of the car (e.g. BMW, Mercedes)"
+        },
+        "model": {
+          "type": "string",
+          "description": "The vehicle model name"
+        },
+        "variant": {
+          "type": "string",
+          "description": "The specific engine/feature trim variant"
+        },
+        "year": {
+          "type": "integer",
+          "description": "The model year of the vehicle"
+        },
+        "fuelType": {
+          "type": "string",
+          "enum": ["Petrol", "Diesel", "Electric", "CNG", "Hybrid"],
+          "description": "The fuel classification"
+        },
+        "transmission": {
+          "type": "string",
+          "enum": ["Automatic", "Manual"],
+          "description": "The transmission configuration"
+        },
+        "exteriorColor": {
+          "type": "string",
+          "description": "Outer paint color"
+        },
+        "interiorColor": {
+          "type": "string",
+          "description": "Upholstery or interior trim color"
+        },
+        "price": {
+          "type": "number",
+          "description": "Value of the vehicle in Lakhs (e.g. 24.5)"
+        },
+        "mileage": {
+          "type": "integer",
+          "description": "Kilometers driven by the vehicle"
+        },
+        "ownerCount": {
+          "type": "integer",
+          "description": "The number of historical title owners"
+        },
+        "registration": {
+          "type": "string",
+          "description": "Official RTO vehicle registration code"
+        },
+        "description": {
+          "type": "string",
+          "description": "Dealer visual description and pitch"
+        },
+        "features": {
+          "type": "array",
+          "description": "Styling, infotainment, or security features list"
+        },
+        "inspectionNotes": {
+          "type": "string",
+          "description": "Private visual assessment notes from dealer inspection"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "reserved", "sold", "archived"],
+          "description": "Availability state of the asset"
+        },
+        "images": {
+          "type": "array",
+          "description": "A collection of listing image URLs or Base64 data"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when this listing was initiated"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when this listing was modified"
+        },
+        "isFeatured": {
+          "type": "boolean",
+          "description": "Promoted to primary homepage hero slider"
+        }
+      },
+      "required": ["id", "make", "model", "variant", "year", "fuelType", "transmission", "price", "mileage", "ownerCount", "registration", "status", "images", "createdAt", "updatedAt"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Customer purchase, sale, or general inquiry sheet",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The unique lead record identifier"
+        },
+        "vehicleId": {
+          "type": "string",
+          "description": "Reference vehicle listing if any"
+        },
+        "vehicleName": {
+          "type": "string",
+          "description": "The make and model of the associated car"
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Lead customer full standard name"
+        },
+        "customerEmail": {
+          "type": "string",
+          "description": "Email address of the contact lead"
+        },
+        "customerPhone": {
+          "type": "string",
+          "description": "Phone number or mobile coordinate"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["BUY_INQUIRY", "SELL_INQUIRY", "GENERAL_INQUIRY"],
+          "description": "Class of transaction inquiry"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["NEW", "CONTACTED", "NEGOTIATING", "BOOKED", "SOLD", "CLOSED"],
+          "description": "The lead life-cycle pipeline stage"
+        },
+        "preferredContactMethod": {
+          "type": "string",
+          "enum": ["WhatsApp", "Phone", "Email"],
+          "description": "How the client prefers to be contacted"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Dealer specific conversation notes"
+        },
+        "expectedPrice": {
+          "type": "number",
+          "description": "Expected price in lakhs if they are selling"
+        },
+        "sellCarDetails": {
+          "type": "object",
+          "description": "Details about user's car if selling"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Lead entry record date"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Lead profile updated date"
+        }
+      },
+      "required": ["id", "customerName", "customerEmail", "customerPhone", "type", "status", "preferredContactMethod", "notes", "createdAt", "updatedAt"]
+    },
+    "SiteConfig": {
+      "title": "SiteConfig",
+      "description": "Global customization parameters for the dealership brand and hours",
+      "type": "object",
+      "properties": {
+        "storeName": {
+          "type": "string",
+          "description": "dealership title brand name"
+        },
+        "address": {
+          "type": "string",
+          "description": "Physical headquarters physical address"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Direct dealer sales desk line"
+        },
+        "whatsApp": {
+          "type": "string",
+          "description": "WhatsApp messenger number"
+        },
+        "instagram": {
+          "type": "string",
+          "description": "Instagram handle text"
+        },
+        "businessHours": {
+          "type": "string",
+          "description": "Dealership operational shift hours"
+        },
+        "footerText": {
+          "type": "string",
+          "description": "Legal footer info"
+        },
+        "legalNotes": {
+          "type": "string",
+          "description": "Independent disclaimer details"
+        },
+        "logoUrl": {
+          "type": "string",
+          "description": "custom brand logo file/symbol link"
+        },
+        "heroBanner": {
+          "type": "string",
+          "description": "custom backdrop image slider/banner link"
+        },
+        "googleRating": {
+          "type": "number",
+          "description": "Dealers current Google rating average"
+        },
+        "reviewsCount": {
+          "type": "number",
+          "description": "Total number of reviews on Google"
+        }
+      },
+      "required": ["storeName", "address", "phone", "whatsApp", "instagram", "businessHours", "footerText", "legalNotes"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Collection storing authenticated user credentials and admin designations."
+    },
+    "vehicles/{vehicleId}": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "Dealership active and historic vehicle catalog listings."
+    },
+    "leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "Dealer customer interest pipeline, listing buyer/seller inquiries."
+    },
+    "site_config/global": {
+      "schema": { "$ref": "#/entities/SiteConfig" },
+      "description": "Singular global settings document for dealer visual settings and hours."
+    }
+  }
+}
