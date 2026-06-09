@@ -30,10 +30,17 @@ import {
 
 export const DealerDashboard: React.FC = () => {
   const { user, signInWithGoogle, signInWithCredentials, signInDemoAdmin, signOutUser, isAdmin, isLoading: isAuthLoading } = useAuth();
-  const { vehicles, leads } = useVehicles();
+  const { vehicles, leads, fetchLeads } = useVehicles();
   const { siteConfig } = useSiteConfig();
   const { showToast } = useToast();
   const navigate = useNavigate();
+
+  // Lazy-load Leads on-demand only for authorized administrators
+  React.useEffect(() => {
+    if (user && isAdmin) {
+      fetchLeads();
+    }
+  }, [user, isAdmin, fetchLeads]);
 
   // Credential login states
   const [emailInput, setEmailInput] = React.useState('');
@@ -134,7 +141,7 @@ export const DealerDashboard: React.FC = () => {
             <Lock className="w-4 h-4 text-[#c5a059] mx-auto mb-1.5" />
             <h3 className="font-sans font-bold text-xs text-zinc-200 uppercase tracking-wider">SECURE STAFF LOGIN</h3>
             <p className="text-[10px] text-zinc-500 font-sans mt-0.5 max-w-xs leading-relaxed">
-              Enter registered Bombay Motors staff ID/Email & Branch Passcode keys (e.g. <code>bombaymotors55@gmail.com</code> & <code>bombay55</code>)
+              Enter registered Bombay Motors staff ID & Passcode keys (e.g. <code>Bombay</code> & <code>6969</code>)
             </p>
           </div>
 
@@ -147,16 +154,16 @@ export const DealerDashboard: React.FC = () => {
             )}
 
             <div className="flex flex-col gap-1">
-              <label className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest">Registered Email ID</label>
+              <label className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest">Registered Staff ID</label>
               <input
-                type="email"
+                type="text"
                 required
                 value={emailInput}
                 onChange={(e) => {
                   setEmailInput(e.target.value);
                   setLoginError('');
                 }}
-                placeholder="registered-name@example.com"
+                placeholder="e.g. Bombay"
                 className="w-full bg-[#1c1c1f] border border-white/5 focus:border-[#c5a059]/40 rounded-lg p-3 text-xs text-white font-mono focus:outline-none focus:ring-0"
               />
             </div>
@@ -196,23 +203,16 @@ export const DealerDashboard: React.FC = () => {
 
           {/* Secondary fallback gates */}
           <div className="w-full border-t border-white/[0.04] mt-6 pt-5 flex flex-col gap-2.5">
-            <span className="text-[9px] font-mono text-zinc-600 text-center uppercase tracking-widest">or integrate instantly</span>
-            
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={handleGoogleSignIn}
-                className="py-2.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-xs text-white font-sans font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer outline-none"
-              >
-                Google Authentication
-              </button>
-
-              <button
-                onClick={handleDemoSignIn}
-                className="py-2.5 bg-zinc-900/60 hover:bg-zinc-800 border border-dashed border-white/5 text-[9px] text-[#c5a059] font-mono uppercase tracking-widest rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer outline-none"
-              >
-                ✨ One-Tap Demo
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                setEmailInput('Bombay');
+                setPasswordInput('6969');
+                showToast('Demo credentials auto-filled!', 'success');
+              }}
+              className="w-full py-2.5 bg-zinc-900/60 hover:bg-zinc-800 border border-dashed border-white/5 text-[9px] text-[#c5a059] font-mono uppercase tracking-widest rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer outline-none"
+            >
+              ✨ Auto-Fill Demo Credentials
+            </button>
           </div>
 
           {/* Fallback back home Link */}

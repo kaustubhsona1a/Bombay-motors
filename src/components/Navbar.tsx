@@ -30,7 +30,7 @@ export const Navbar: React.FC = () => {
   const formattedWhatsApp = siteConfig.whatsApp ? siteConfig.whatsApp.replace(/[^0-9]/g, '') : '';
 
   return (
-    <header className="w-full z-40 bg-[#09090b] border-b border-white/5">
+    <header className="fixed top-0 left-0 right-0 z-50 bg-[#09090b]/80 backdrop-blur-md border-b border-white/5">
       {/* Primary header navbar */}
       <nav className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex justify-between items-center relative">
         {/* Brand Logo */}

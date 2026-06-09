@@ -191,7 +191,7 @@ export const SellYourCar: React.FC = () => {
   ];
 
   return (
-    <div className="bg-[#09090b] text-[#f4f4f5] min-h-screen py-16 px-4 md:px-8 font-sans">
+    <div className="bg-transparent text-[#f4f4f5] min-h-screen pt-28 md:pt-32 pb-16 px-4 md:px-8 font-sans">
       <div className="max-w-3xl mx-auto">
         
         {/* Page Titles */}

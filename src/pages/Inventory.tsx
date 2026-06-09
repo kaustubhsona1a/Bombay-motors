@@ -113,7 +113,7 @@ export const Inventory: React.FC = () => {
   };
 
   return (
-    <div className="bg-[#09090b] text-[#f4f4f5] min-h-screen py-12 px-4 md:px-8">
+    <div className="bg-transparent text-[#f4f4f5] min-h-screen pt-24 md:pt-28 pb-12 px-4 md:px-8">
       <div className="max-w-7xl mx-auto">
         
         {/* Page Header */}

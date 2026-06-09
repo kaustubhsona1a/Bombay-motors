@@ -12,7 +12,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 interface AuthContextType {
   user: UserProfile | null;
   signInWithGoogle: () => Promise<void>;
-  signInWithCredentials: (email: string, pass: string) => Promise<boolean>;
+  signInWithCredentials: (usernameOrEmail: string, pass: string) => Promise<boolean>;
   signInDemoAdmin: () => Promise<void>;
   signOutUser: () => Promise<void>;
   isAdmin: boolean;
@@ -138,13 +138,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('bombay_motors_user', JSON.stringify(demoProfile));
   };
 
-  const signInWithCredentials = async (email: string, pass: string): Promise<boolean> => {
-    const cleanEmail = email.trim().toLowerCase();
+  const signInWithCredentials = async (usernameOrEmail: string, pass: string): Promise<boolean> => {
+    const cleanInput = usernameOrEmail.trim().toLowerCase();
+    const cleanPass = pass.trim();
     
-    // Check credentials against the bootstrapped email or standard admin passwords
+    // Check credentials against the bootstrapped email or standard admin passwords or Bombay / 6969
     const isAuthenticAdmin = 
-      (cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase() || cleanEmail === 'admin@bombaymotors.com') && 
-      (pass === 'bombay55' || pass === 'Bombay55' || pass === 'Bombay@123');
+      (cleanInput === 'bombay' && cleanPass === '6969') ||
+      ((cleanInput === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase() || cleanInput === 'admin@bombaymotors.com') && 
+       (cleanPass === 'bombay55' || cleanPass === 'Bombay55' || cleanPass === 'Bombay@123'));
 
     if (isAuthenticAdmin) {
       if (!isFirebaseMock && auth) {

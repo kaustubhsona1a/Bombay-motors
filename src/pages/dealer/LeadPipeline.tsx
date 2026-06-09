@@ -36,19 +36,21 @@ const PIPELINE_COLUMNS = [
 
 export const LeadPipeline: React.FC = () => {
   const { isAdmin } = useAuth();
-  const { leads, updateLeadStatus, isLoading } = useVehicles();
+  const { leads, updateLeadStatus, isLoading, fetchLeads } = useVehicles();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
   // Selected lead for detail popup modal
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
-  // Security gate
+  // Security gate & load leads
   React.useEffect(() => {
     if (!isAdmin) {
       navigate('/dealer-management');
+    } else {
+      fetchLeads();
     }
-  }, [isAdmin, navigate]);
+  }, [isAdmin, navigate, fetchLeads]);
 
   // Group leads based on selected state column
   const groupedLeads = useMemo(() => {

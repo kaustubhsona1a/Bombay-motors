@@ -118,7 +118,7 @@ export const VehicleDetails: React.FC = () => {
   };
 
   return (
-    <div className="bg-[#09090b] text-[#f4f4f5] min-h-screen py-10 px-4 md:px-8 font-sans">
+    <div className="bg-transparent text-[#f4f4f5] min-h-screen pt-24 md:pt-28 pb-10 px-4 md:px-8 font-sans">
       <div className="max-w-7xl mx-auto">
         
         {/* Back Link Nav block */}

@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { SiteConfig } from '../types';
 import { db, isFirebaseMock, handleFirestoreError, OperationType } from '../firebase';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 const DEFAULT_SITE_CONFIG: SiteConfig = {
   storeName: "Bombay Motors",
@@ -38,6 +38,24 @@ const DEFAULT_SITE_CONFIG: SiteConfig = {
   googleReviewsUrl: "https://search.google.com/local/reviews?placeid=ChIJSV7H-MTEzzsRC0aI03x7Oig"
 };
 
+// Cooldown of 15 minutes for site config fetch to save premium read units
+const CACHE_COOLDOWN_MS = 15 * 60 * 1000;
+
+// Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
+const safeGetItem = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch (_) {
+    return null;
+  }
+};
+
+const safeSetItem = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {}
+};
+
 interface SiteConfigContextType {
   siteConfig: SiteConfig;
   updateSiteConfig: (newConfig: Partial<SiteConfig>) => Promise<void>;
@@ -48,59 +66,84 @@ const SiteConfigContext = createContext<SiteConfigContextType | undefined>(undef
 
 export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(() => {
-    const saved = localStorage.getItem('bombay_motors_site_config');
+    const saved = safeGetItem('bombay_motors_site_config');
     return saved ? JSON.parse(saved) : DEFAULT_SITE_CONFIG;
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (isFirebaseMock || !db) {
-      setIsLoading(false);
-      return;
-    }
-
-    const configDocRef = doc(db, 'site_config', 'global');
-
-    // Subscribe to real-time changes
-    const unsubscribe = onSnapshot(configDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data() as SiteConfig;
-        setSiteConfig(data);
-        localStorage.setItem('bombay_motors_site_config', JSON.stringify(data));
+    const loadConfig = async () => {
+      // If we are in mock mode, there's no live db connection
+      if (isFirebaseMock || !db) {
+        setIsLoading(false);
+        return;
       }
-      setIsLoading(false);
-    }, (error) => {
-      // Gracefully catch and handle firebase snapshot permissions/errors
-      console.warn('Firestore snapshot error for site settings:', error);
-      setIsLoading(false);
-    });
 
-    return () => unsubscribe();
+      // Read-optimization: Check if we have fetched recently
+      const lastFetchedStr = safeGetItem('bombay_motors_site_config_last_fetch');
+      const now = Date.now();
+      if (lastFetchedStr) {
+        const lastFetched = Number(lastFetchedStr);
+        if (now - lastFetched < CACHE_COOLDOWN_MS) {
+          console.log('SiteConfig: Loading cached version to protect reads (cooldown active).');
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      try {
+        console.log('SiteConfig: Performing background Firestore fetch for global operational configurations...');
+        const configDocRef = doc(db, 'site_config', 'global');
+        const docSnap = await getDoc(configDocRef);
+
+        if (docSnap.exists()) {
+          const remoteConfig = docSnap.data().config as SiteConfig;
+          if (remoteConfig) {
+            setSiteConfig(remoteConfig);
+            safeSetItem('bombay_motors_site_config', JSON.stringify(remoteConfig));
+            safeSetItem('bombay_motors_site_config_last_fetch', String(now));
+          }
+        } else {
+          // If the config doesn't exist in live Firestore yet, save our current active configuration to seed it
+          console.log('SiteConfig: Seed configuration doc not found on Firestore. Uploading default setup.');
+          await setDoc(configDocRef, { config: siteConfig });
+          safeSetItem('bombay_motors_site_config_last_fetch', String(now));
+        }
+      } catch (err: any) {
+        console.warn('Could not load site configuration from live Firestore (quota or setup). Operating on cached copy.', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadConfig();
   }, []);
 
-  const updateSiteConfig = async (newConfig: Partial<SiteConfig>) => {
+  const updateSiteConfig = useCallback(async (newConfig: Partial<SiteConfig>) => {
     let merged = { ...siteConfig, ...newConfig };
 
-    // Asynchronously optimize document size if it contains oversized base64 images to prevent Firestore errors
+    // Asynchronously optimize document size if it contains oversized base64 images to prevent size limits
     try {
       const { optimizeSiteConfigSize } = await import('../utils/imageCompressor');
       merged = await optimizeSiteConfigSize(merged);
     } catch (compressErr) {
-      console.warn('Could not optimize site config size asynchronously:', compressErr);
+      console.warn('Could not optimize site config size:', compressErr);
     }
 
     setSiteConfig(merged);
-    localStorage.setItem('bombay_motors_site_config', JSON.stringify(merged));
+    safeSetItem('bombay_motors_site_config', JSON.stringify(merged));
 
     if (!isFirebaseMock && db) {
+      const path = 'site_config/global';
       try {
-        const configDocRef = doc(db, 'site_config', 'global');
-        await setDoc(configDocRef, merged);
+        console.log('SiteConfig: Updating configurations document to Firestore...');
+        await setDoc(doc(db, 'site_config', 'global'), { config: merged });
+        safeSetItem('bombay_motors_site_config_last_fetch', String(Date.now()));
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'site_config/global');
+        handleFirestoreError(err, OperationType.WRITE, path);
       }
     }
-  };
+  }, [siteConfig]);
 
   return (
     <SiteConfigContext.Provider value={{ siteConfig, updateSiteConfig, isLoading }}>

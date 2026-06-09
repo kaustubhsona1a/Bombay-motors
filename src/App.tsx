@@ -31,24 +31,13 @@ import { EditVehicle } from './pages/dealer/EditVehicle';
 import { LeadPipeline } from './pages/dealer/LeadPipeline';
 import { SettingsPanel } from './pages/dealer/SettingsPanel';
 
-// 1. Layout with Sticky Customer Header and Footer and Fixed Ambient Background
+// 1. Layout with Sticky Customer Header and Footer
 const CustomerLayout: React.FC = () => {
   return (
     <div className="flex flex-col min-h-screen bg-[#09090b] relative overflow-x-hidden">
-      {/* Fixed Ambient Background Image */}
-      <div 
-        className="fixed inset-0 z-0 pointer-events-none opacity-15 filter saturate-50 contrast-125 brightness-[0.35] bg-cover bg-center"
-        style={{ 
-          backgroundImage: `url('https://images.unsplash.com/photo-1511919884226-fd3cad34687c?auto=format&fit=crop&q=80&w=1600')`,
-          backgroundAttachment: 'fixed',
-        }}
-      />
-      {/* Fixed Gradient Overlay to maintain high contrast for the text */}
-      <div className="fixed inset-0 z-0 pointer-events-none bg-gradient-to-b from-[#09090b]/30 via-[#09090b]/85 to-[#09090b]" />
-
       <div className="relative z-10 flex flex-col min-h-screen overflow-x-hidden">
         <Navbar />
-        <main className="flex-grow pt-16">
+        <main className="flex-grow bg-[#09090b]">
           <Outlet />
         </main>
         <Footer />

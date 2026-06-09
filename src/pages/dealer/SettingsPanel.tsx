@@ -7,8 +7,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useSiteConfig } from '../../context/SiteConfigContext';
+import { useVehicles } from '../../context/VehicleContext';
 import { useToast } from '../../context/ToastContext';
-import { ChevronLeft, ChevronRight, Save, MapPin, Phone, MessageSquare, Clock, Globe, Instagram, Upload, X, Image as ImageIcon, ArrowLeft, ArrowRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Save, MapPin, Phone, MessageSquare, Clock, Globe, Instagram, Upload, X, Image as ImageIcon, ArrowLeft, ArrowRight, Database, Copy, Check, CheckCircle2, RefreshCw, HelpCircle } from 'lucide-react';
 import { compressImage, compressImageToBlob } from '../../utils/imageCompressor';
 import { isFirebaseMock, dataURLtoBlob, uploadImageToStorage } from '../../firebase';
 
@@ -586,8 +587,8 @@ export const SettingsPanel: React.FC = () => {
             {/* Custom Background Images Section */}
             <div className="border-t border-white/5 pt-6 flex flex-col gap-6">
               <div>
-                <h3 className="text-sm font-mono tracking-wider uppercase text-[#c5a059] mb-1">Section Background Media</h3>
-                <p className="text-[11px] text-zinc-500">Provide direct web image paths or upload directly from your local device to customize layout backgrounds.</p>
+                <h3 className="text-sm font-mono tracking-wider uppercase text-[#c5a059] mb-1">Hero Section Banner</h3>
+                <p className="text-[11px] text-zinc-500">Provide a direct web image path or upload directly from your local device to customize the main home page showcase vehicle background.</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -606,57 +607,6 @@ export const SettingsPanel: React.FC = () => {
                   type="file"
                   accept="image/*"
                   onChange={(e) => handleSingleImageUpload(e.target.files, setHeroBanner, setIsHeroCompressing)}
-                  className="hidden"
-                />
-
-                {/* Sell section */}
-                <VisualImageUploader
-                  label="Trade Evaluation Header (Sell Page)"
-                  value={sellSectionBg}
-                  onChange={setSellSectionBg}
-                  fileInputRef={sellFileInputRef}
-                  isCompressing={isSellCompressing}
-                  onUploadClick={() => sellFileInputRef.current?.click()}
-                />
-                <input
-                  ref={sellFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleSingleImageUpload(e.target.files, setSellSectionBg, setIsSellCompressing)}
-                  className="hidden"
-                />
-
-                {/* Testimonials section bg */}
-                <VisualImageUploader
-                  label="Testimonials Backdrop overlay (Home)"
-                  value={testimonialsBg}
-                  onChange={setTestimonialsBg}
-                  fileInputRef={testimonialsFileInputRef}
-                  isCompressing={isTestimonialsCompressing}
-                  onUploadClick={() => testimonialsFileInputRef.current?.click()}
-                />
-                <input
-                  ref={testimonialsFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleSingleImageUpload(e.target.files, setTestimonialsBg, setIsTestimonialsCompressing)}
-                  className="hidden"
-                />
-
-                {/* Showroom coords bg */}
-                <VisualImageUploader
-                  label="Showroom coordinates background (Home)"
-                  value={showroomBg}
-                  onChange={setShowroomBg}
-                  fileInputRef={showroomFileInputRef}
-                  isCompressing={isShowroomCompressing}
-                  onUploadClick={() => showroomFileInputRef.current?.click()}
-                />
-                <input
-                  ref={showroomFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleSingleImageUpload(e.target.files, setShowroomBg, setIsShowroomCompressing)}
                   className="hidden"
                 />
 

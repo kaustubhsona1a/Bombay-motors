@@ -12,8 +12,8 @@ export const AboutUs: React.FC = () => {
   const formattedWhatsApp = siteConfig.whatsApp ? siteConfig.whatsApp.replace(/[^0-9]/g, '') : '';
 
   return (
-    <div className="bg-[#09090b] text-[#f4f4f5] min-h-screen py-16 px-4 md:px-8 font-sans">
-      <div className="max-w-4xl mx-auto">
+    <div className="bg-transparent text-[#f4f4f5] min-h-screen pt-28 md:pt-32 pb-16 px-4 md:px-8 font-sans">
+      <div className="max-w-7xl mx-auto">
         
         {/* About heading */}
         <div className="text-center mb-16">
@@ -83,7 +83,7 @@ export const AboutUs: React.FC = () => {
 
         {/* Main Showroom Banner / Custom About Photo */}
         {siteConfig.aboutSectionPhoto && (
-          <div className="w-full h-64 md:h-96 rounded-2xl overflow-hidden border border-white/5 mb-16 relative">
+          <div className="max-w-3xl mx-auto w-full rounded-2xl overflow-hidden border border-white/5 mb-16 relative aspect-[4/3] sm:aspect-[16/10] md:max-h-[480px]">
             <img 
               src={siteConfig.aboutSectionPhoto} 
               alt="Bombay Motors Boutique" 
@@ -93,7 +93,7 @@ export const AboutUs: React.FC = () => {
             <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
             <div className="absolute bottom-6 left-6 md:left-8">
               <span className="text-[#c5a059] font-mono text-xs tracking-widest uppercase">LBS MARG SHOWROOM</span>
-              <h2 className="text-white font-sans font-bold text-lg md:text-xl uppercase tracking-wider mt-1">
+              <h2 className="text-white font-sans font-bold text-base md:text-xl uppercase tracking-wider mt-1">
                 Where Trust Meets Integrity
               </h2>
             </div>

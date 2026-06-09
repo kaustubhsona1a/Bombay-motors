@@ -76,9 +76,9 @@ export const Home: React.FC = () => {
   const formattedWhatsApp = siteConfig.whatsApp ? siteConfig.whatsApp.replace(/[^0-9]/g, '') : '';
 
   return (
-    <div className="bg-[#09090b] text-[#f4f4f5]">
+    <div className="bg-transparent text-[#f4f4f5]">
       {/* 1. HERO SECTION WITH SHOWROOM STYLING */}
-      <section className="relative h-[85vh] md:h-[90vh] flex items-center justify-center overflow-hidden bg-zinc-950">
+      <section className="relative h-[85vh] md:h-[90vh] flex items-center justify-center overflow-hidden bg-zinc-950 pt-16 md:pt-20">
         {/* Background Image with subtle Ken Burns overlay effect */}
         <div className="absolute inset-0 z-0">
           {/* Multi-layered dark overlay to guarantee superb legibility on both bright and dark screens */}
@@ -150,7 +150,7 @@ export const Home: React.FC = () => {
       </section>
 
       {/* 2. VALUE PROPOSITIONS */}
-      <section className="py-20 px-6 md:px-8 border-b border-white/5 bg-[#09090b]">
+      <section className="py-20 px-6 md:px-8 border-b border-white/5 bg-transparent">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-16">
             <span className="text-[#c5a059] font-mono text-[10px] sm:text-xs tracking-[0.1em] sm:tracking-[0.2em] uppercase block px-4 leading-normal">40 YEARS ON L.B.S. MARG • SERVING 15,000+ MUMBAI FAMILIES</span>
@@ -301,17 +301,6 @@ export const Home: React.FC = () => {
 
       {/* 4. REVIEWS TESTIMONIALS CAROUSEL */}
       <section className="py-20 px-6 md:px-8 border-b border-white/5 relative overflow-hidden bg-zinc-950/60">
-        {/* Ambient Custom Section Background */}
-        {siteConfig.testimonialsBg && (
-          <div className="absolute inset-0 z-0 opacity-[0.11]">
-            <img 
-              src={siteConfig.testimonialsBg} 
-              alt="Testimonials Backdrop" 
-              className="w-full h-full object-cover pointer-events-none select-none filter blur-sm grayscale brightness-50"
-            />
-            <div className="absolute inset-0 bg-zinc-950/40" />
-          </div>
-        )}
         <div className="max-w-4xl mx-auto relative z-10">
           <div className="text-center mb-12">
             <span className="text-[#c5a059] font-mono text-xs tracking-[0.2em] uppercase">CLIENT REFLECTIONS</span>
@@ -410,17 +399,6 @@ export const Home: React.FC = () => {
 
       {/* 5. SHOWROOM LOCATION & CONTACT CTAs */}
       <section className="py-20 px-6 md:px-8 relative overflow-hidden bg-zinc-950">
-        {/* Ambient Showroom Section Background */}
-        {siteConfig.showroomBg && (
-          <div className="absolute inset-0 z-0 opacity-[0.07]">
-            <img 
-              src={siteConfig.showroomBg} 
-              alt="Showroom Location Backdrop" 
-              className="w-full h-full object-cover pointer-events-none select-none filter grayscale contrast-125 hover:scale-105 transition-transform duration-1000"
-            />
-            <div className="absolute inset-0 bg-[#09090b]/60" />
-          </div>
-        )}
         <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-center relative z-10">
           <div className="flex flex-col gap-6">
             <span className="text-[#c5a059] font-mono text-xs tracking-widest uppercase"> VISIT THE SHOWROOM </span>

@@ -3,23 +3,96 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Vehicle, Lead } from '../types';
 import { INITIAL_VEHICLES } from '../data/mockVehicles';
 import { INITIAL_LEADS } from '../data/mockLeads';
 import { db, isFirebaseMock, handleFirestoreError, OperationType } from '../firebase';
 import { 
   collection, 
-  onSnapshot, 
   doc, 
+  getDoc,
+  getDocs, 
   setDoc, 
-  addDoc, 
   updateDoc, 
   deleteDoc, 
   query, 
   orderBy, 
-  getDocs 
+  limit 
 } from 'firebase/firestore';
+
+// Helper to sanitize and map Firestore Vehicle documents
+function parseFirestoreVehicle(data: any, id: string): Vehicle {
+  return {
+    id: id,
+    make: data.make || '',
+    model: data.model || '',
+    variant: data.variant || '',
+    year: Number(data.year || 2020),
+    fuelType: data.fuelType || data.fuel_type || '',
+    transmission: data.transmission || 'Manual',
+    exteriorColor: data.exteriorColor || data.exterior_color || '',
+    interiorColor: data.interiorColor || data.interior_color || '',
+    price: Number(data.price || 0),
+    mileage: Number(data.mileage || 0),
+    ownerCount: Number(data.ownerCount || data.owner_count || 1),
+    registration: data.registration || '',
+    description: data.description || '',
+    features: Array.isArray(data.features) ? data.features : [],
+    inspectionNotes: data.inspectionNotes || data.inspection_notes || '',
+    status: data.status || 'active',
+    images: Array.isArray(data.images) ? data.images : [],
+    createdAt: data.createdAt || data.created_at || new Date().toISOString(),
+    updatedAt: data.updatedAt || data.updated_at || new Date().toISOString(),
+    isFeatured: !!(data.isFeatured || data.is_featured),
+  };
+}
+
+// Helper to sanitize and map Firestore Lead documents
+function parseFirestoreLead(data: any, id: string): Lead {
+  return {
+    id: id,
+    vehicleId: data.vehicleId || data.vehicle_id || null,
+    vehicleName: data.vehicleName || data.vehicle_name || null,
+    customerName: data.customerName || data.customer_name || '',
+    customerEmail: data.customerEmail || data.customer_email || '',
+    customerPhone: data.customerPhone || data.customer_phone || '',
+    type: data.type || 'BUY_INQUIRY',
+    status: data.status || 'NEW',
+    preferredContactMethod: data.preferredContactMethod || data.preferred_contact_method || 'WhatsApp',
+    notes: data.notes || '',
+    expectedPrice: data.expectedPrice !== undefined ? Number(data.expectedPrice) : (data.expected_price !== undefined ? Number(data.expected_price) : undefined),
+    sellCarDetails: data.sellCarDetails || data.sell_car_details || null,
+    createdAt: data.createdAt || data.created_at || new Date().toISOString(),
+    updatedAt: data.updatedAt || data.updated_at || new Date().toISOString(),
+  };
+}
+
+// Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
+const safeStorage = {
+  getItem(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      console.warn('safeStorage: localStorage blocked by sandboxed iframe security policies.', e);
+      return null;
+    }
+  },
+  setItem(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      console.warn('safeStorage: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+  },
+  removeItem(key: string): void {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      console.warn('safeStorage: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+  }
+};
 
 interface VehicleContextType {
   vehicles: Vehicle[];
@@ -33,123 +106,235 @@ interface VehicleContextType {
   deleteLead: (leadId: string) => Promise<void>;
   isLoading: boolean;
   seedDataIfNeeded: () => Promise<void>;
+  fetchLeads: (force?: boolean) => Promise<void>;
+  isLeadsLoading: boolean;
 }
 
 const VehicleContext = createContext<VehicleContextType | undefined>(undefined);
 
 export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>(() => {
+    // Synchronous safe loading of cache prior to mounting reduces initial flicker layout-shift
+    const cached = safeStorage.getItem('bombay_motors_vehicles');
+    return cached ? JSON.parse(cached) : INITIAL_VEHICLES;
+  });
+  
+  const [leads, setLeads] = useState<Lead[]>(() => {
+    const cached = safeStorage.getItem('bombay_motors_leads');
+    return cached ? JSON.parse(cached) : INITIAL_LEADS;
+  });
+  
   const [isLoading, setIsLoading] = useState(true);
+  const [isLeadsLoading, setIsLeadsLoading] = useState(false);
 
-  // Initialize and load data
+  // Initialize and load vehicles using index metadata-gate check
   useEffect(() => {
-    if (isFirebaseMock || !db) {
-      // Mock Storage Engine with high fidelity
-      const localVehiclesStr = localStorage.getItem('bombay_motors_vehicles');
-      const localLeadsStr = localStorage.getItem('bombay_motors_leads');
+    let active = true;
 
-      let localVehicles = INITIAL_VEHICLES;
-      let localLeads = INITIAL_LEADS;
-
-      if (localVehiclesStr) {
-        localVehicles = JSON.parse(localVehiclesStr);
-      } else {
-        localStorage.setItem('bombay_motors_vehicles', JSON.stringify(INITIAL_VEHICLES));
+    const initializeVehicles = async () => {
+      if (active) {
+        setIsLoading(true);
       }
 
-      if (localLeadsStr) {
-        localLeads = JSON.parse(localLeadsStr);
-      } else {
-        localStorage.setItem('bombay_motors_leads', JSON.stringify(INITIAL_LEADS));
+      // Check if active Firestore connection is online, perform background sync with cooldown
+      if (!isFirebaseMock && db) {
+        try {
+          console.log('VehicleContext: Verifying showroom inventory metadata status on Firestore...');
+          const metaDocRef = doc(db, 'config', 'vehicles_meta');
+          let remoteMeta: any = null;
+
+          try {
+            // Costs exactly 1 read, avoids scanning 100+ vehicles sequentially!
+            const metaSnap = await getDoc(metaDocRef);
+            if (metaSnap.exists()) {
+              remoteMeta = metaSnap.data();
+            }
+          } catch (metaErr) {
+            console.warn('VehicleContext: Config metadata doc not found or unreachable. Falling back to active scan.', metaErr);
+          }
+
+          const localMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
+          const localVehiclesStr = safeStorage.getItem('bombay_motors_vehicles');
+
+          // METADATA MATCH CHECK: If remote timestamp matches cached timestamp, load directly from local state / cache
+          if (remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === localMetaStamp && localVehiclesStr) {
+            console.log('VehicleContext: Showroom is up to date (Metadata timestamp matches). 0 Firebase reads consumed for query.');
+            if (active) {
+              setIsLoading(false);
+            }
+            return;
+          }
+
+          // Fetch the entire collection if cache is stale/empty
+          console.log('VehicleContext: Cache is either stale, mismatched, or empty. Syncing catalog with full database document read...');
+          const vehicleSnap = await getDocs(collection(db, 'vehicles'));
+          const firestoreVehicles: Vehicle[] = [];
+          
+          vehicleSnap.forEach((docSnap) => {
+            firestoreVehicles.push(parseFirestoreVehicle(docSnap.data(), docSnap.id));
+          });
+
+          // If the Firestore vehicle database is completely empty (e.g., brand new project), seed it with initial mockup data
+          if (firestoreVehicles.length === 0) {
+            console.log('VehicleContext: Showroom is empty. Inoculating database with pre-configured sample inventory...');
+            for (const v of INITIAL_VEHICLES) {
+              await setDoc(doc(db, 'vehicles', v.id), v);
+            }
+            const initStamp = new Date().toISOString();
+            await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
+            
+            if (active) {
+              setVehicles(INITIAL_VEHICLES);
+            }
+            safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(INITIAL_VEHICLES));
+            safeStorage.setItem('bombay_motors_vehicles_last_server_update', initStamp);
+          } else {
+            // Sort by creation datetime desc
+            firestoreVehicles.sort((a, b) => {
+              const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return timeB - timeA;
+            });
+
+            // Update local memory and cache values
+            if (active) {
+              setVehicles(firestoreVehicles);
+            }
+            
+            const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
+            
+            // In case the collection was seeded previously but config/vehicles_meta did not exist
+            if (!remoteMeta) {
+              await setDoc(metaDocRef, { lastUpdatedAt: currentMetaStamp });
+            }
+
+            safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(firestoreVehicles));
+            safeStorage.setItem('bombay_motors_vehicles_last_server_update', currentMetaStamp);
+          }
+        } catch (fErr) {
+          console.warn('VehicleContext: Background inventory list syncing failed (likely quota limit reached). Continuing on cache.', fErr);
+        }
       }
 
-      setVehicles(localVehicles);
-      setLeads(localLeads);
-      setIsLoading(false);
-      return;
-    }
+      if (active) {
+        setIsLoading(false);
+      }
+    };
 
-    // Live Firebase Engine: Vehicles stream
-    const unsubscribeVehicles = onSnapshot(collection(db, 'vehicles'), (snapshot) => {
-      const items: Vehicle[] = [];
-      snapshot.forEach((docSnap) => {
-        items.push({ id: docSnap.id, ...docSnap.data() } as Vehicle);
-      });
-      // Sort client-side descending by createdAt
-      items.sort((a, b) => {
-        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return timeB - timeA;
-      });
-      setVehicles(items);
-      setIsLoading(false);
-    }, (error) => {
-      console.warn('Vehicles collection stream failed or rule locked:', error);
-      // Fallback to local storage for previews so user isn't locked out of browsing
-      const localVehicles = localStorage.getItem('bombay_motors_vehicles');
-      if (localVehicles) setVehicles(JSON.parse(localVehicles));
-      setIsLoading(false);
-    });
-
-    // Live Firebase Engine: Leads stream
-    const unsubscribeLeads = onSnapshot(collection(db, 'leads'), (snapshot) => {
-      const items: Lead[] = [];
-      snapshot.forEach((docSnap) => {
-        items.push({ id: docSnap.id, ...docSnap.data() } as Lead);
-      });
-      // Sort client-side descending by createdAt
-      items.sort((a, b) => {
-        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return timeB - timeA;
-      });
-      setLeads(items);
-    }, (error) => {
-      console.warn('Leads collection stream failed or rule locked:', error);
-      const localLeads = localStorage.getItem('bombay_motors_leads');
-      if (localLeads) setLeads(JSON.parse(localLeads));
-    });
-
-    // Auto-seed if running on live environment but collections are blank
-    seedDataIfNeeded();
+    initializeVehicles();
 
     return () => {
-      unsubscribeVehicles();
-      unsubscribeLeads();
+      active = false;
     };
   }, []);
 
-  // Helper to sync mock state to local storage
-  const syncMockToLocalStorage = (newVehicles: Vehicle[], newLeads: Lead[]) => {
+  // Helper to sync local state and cache
+  const syncToCache = useCallback((newVehicles: Vehicle[], newLeads: Lead[]) => {
     setVehicles(newVehicles);
     setLeads(newLeads);
-    localStorage.setItem('bombay_motors_vehicles', JSON.stringify(newVehicles));
-    localStorage.setItem('bombay_motors_leads', JSON.stringify(newLeads));
-  };
+    safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(newVehicles));
+    safeStorage.setItem('bombay_motors_leads', JSON.stringify(newLeads));
+  }, []);
 
-  // Seed online database if empty and requested
-  const seedDataIfNeeded = async () => {
+  // Lazy-loading fetch function for CRM Leads featuring Metadata gating
+  const fetchLeads = useCallback(async (force = false) => {
+    if (isFirebaseMock || !db) return;
+
+    setIsLeadsLoading(true);
+    try {
+      console.log('VehicleContext: Verifying CRM leads metadata with Firestore...');
+      const metaDocRef = doc(db, 'config', 'leads_meta');
+      let remoteMeta: any = null;
+
+      try {
+        const metaSnap = await getDoc(metaDocRef);
+        if (metaSnap.exists()) {
+          remoteMeta = metaSnap.data();
+        }
+      } catch (metaErr) {
+        console.warn('VehicleContext: CRM meta timestamp doc not found or unreachable:', metaErr);
+      }
+
+      const localMetaStamp = safeStorage.getItem('bombay_motors_leads_last_server_update');
+      const localLeadsStr = safeStorage.getItem('bombay_motors_leads');
+
+      // METADATA MATCH CHECK: If leads haven't updated, skip reads completely!
+      if (!force && remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === localMetaStamp && localLeadsStr) {
+        console.log('VehicleContext: CRM inquiries are up to date (Metadata timestamp matches). Skipping database read scan.');
+        try {
+          const cachedLeads = JSON.parse(localLeadsStr);
+          setLeads(cachedLeads);
+        } catch (_) {}
+        setIsLeadsLoading(false);
+        return;
+      }
+
+      console.log('VehicleContext: Fetching customer inquiries from database...');
+      const leadsColRef = collection(db, 'leads');
+      const leadsQuery = query(leadsColRef, orderBy('createdAt', 'desc'), limit(300));
+      const leadSnap = await getDocs(leadsQuery);
+
+      const firestoreLeads: Lead[] = [];
+      leadSnap.forEach((docSnap) => {
+        firestoreLeads.push(parseFirestoreLead(docSnap.data(), docSnap.id));
+      });
+
+      // Special initial seeding for leads if the collection is completely empty
+      if (firestoreLeads.length === 0) {
+        console.log('VehicleContext: Bootstrapping CRM database with default client inquiries...');
+        for (const l of INITIAL_LEADS) {
+          await setDoc(doc(db, 'leads', l.id), l);
+        }
+        const initStamp = new Date().toISOString();
+        await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
+
+        setLeads(INITIAL_LEADS);
+        safeStorage.setItem('bombay_motors_leads', JSON.stringify(INITIAL_LEADS));
+        safeStorage.setItem('bombay_motors_leads_last_server_update', initStamp);
+      } else {
+        setLeads(firestoreLeads);
+        const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
+        
+        if (!remoteMeta) {
+          await setDoc(metaDocRef, { lastUpdatedAt: currentMetaStamp });
+        }
+        
+        safeStorage.setItem('bombay_motors_leads', JSON.stringify(firestoreLeads));
+        safeStorage.setItem('bombay_motors_leads_last_server_update', currentMetaStamp);
+      }
+    } catch (err) {
+      console.warn('VehicleContext: Could not retrieve customer inquiries from Firestore.', err);
+    } finally {
+      setIsLeadsLoading(false);
+    }
+  }, []);
+
+  // Seed online database helper (manually or initially invoked)
+  const seedDataIfNeeded = useCallback(async () => {
     if (isFirebaseMock || !db) return;
     try {
-      const querySnapshot = await getDocs(collection(db, 'vehicles'));
-      if (querySnapshot.empty) {
-        console.log('Seeding firestore with initial luxury stock...');
-        for (const vehicle of INITIAL_VEHICLES) {
-          const docRef = doc(db, 'vehicles', vehicle.id);
-          await setDoc(docRef, vehicle);
-        }
-        for (const lead of INITIAL_LEADS) {
-          const docRef = doc(db, 'leads', lead.id);
-          await setDoc(docRef, lead);
-        }
+      console.log('VehicleContext: Seeding initial collections to Firestore...');
+      for (const v of INITIAL_VEHICLES) {
+        await setDoc(doc(db, 'vehicles', v.id), v);
       }
+      for (const l of INITIAL_LEADS) {
+        await setDoc(doc(db, 'leads', l.id), l);
+      }
+      // Initialize BOTH metadata stamps on Firestore to match seeding state
+      const timestamp = new Date().toISOString();
+      await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: timestamp });
+      await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: timestamp });
+      
+      safeStorage.setItem('bombay_motors_vehicles_last_server_update', timestamp);
+      safeStorage.setItem('bombay_motors_leads_last_server_update', timestamp);
+      
+      console.log('VehicleContext: DB seeded successfully.');
     } catch (e) {
-      console.warn('Seeding firestore ignored or failed due to permission rules:', e);
+      console.error('VehicleContext: Error during DB seed:', e);
     }
-  };
+  }, []);
 
-  const addVehicle = async (vehicleData: Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> => {
+  const addVehicle = useCallback(async (vehicleData: Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> => {
     const timestamp = new Date().toISOString();
     const newId = 'vehicle_' + Math.random().toString(36).substr(2, 9);
     const newVehicle: Vehicle = {
@@ -159,56 +344,77 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       updatedAt: timestamp,
     };
 
-    if (isFirebaseMock || !db) {
-      const updatedList = [newVehicle, ...vehicles];
-      syncMockToLocalStorage(updatedList, leads);
-      return newId;
+    // 1. Optimistic immediate local state update
+    const updatedList = [newVehicle, ...vehicles];
+    syncToCache(updatedList, leads);
+
+    // 2. Write to Firestore asynchronous
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Writing new vehicle ${newId} to Firestore...`);
+        await setDoc(doc(db, 'vehicles', newId), newVehicle);
+        
+        // Trigger server metadata timestamp update to bypass cached states for all clients instantly
+        const newStamp = new Date().toISOString();
+        await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+        safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `vehicles/${newId}`);
+      }
     }
 
-    try {
-      // In firestore, use addDoc or secure setDoc
-      await setDoc(doc(db, 'vehicles', newId), newVehicle);
-      return newId;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `vehicles/${newId}`);
-      return '';
-    }
-  };
+    return newId;
+  }, [vehicles, leads, syncToCache]);
 
-  const updateVehicle = async (id: string, updates: Partial<Vehicle>): Promise<void> => {
+  const updateVehicle = useCallback(async (id: string, updates: Partial<Vehicle>): Promise<void> => {
     const timestamp = new Date().toISOString();
     const cleanUpdates = { ...updates, updatedAt: timestamp };
 
-    if (isFirebaseMock || !db) {
-      const updatedList = vehicles.map(v => v.id === id ? { ...v, ...cleanUpdates } as Vehicle : v);
-      syncMockToLocalStorage(updatedList, leads);
-      return;
-    }
+    // 1. Local sync
+    const updatedList = vehicles.map(v => v.id === id ? { ...v, ...cleanUpdates } as Vehicle : v);
+    syncToCache(updatedList, leads);
 
-    try {
-      const ref = doc(db, 'vehicles', id);
-      await updateDoc(ref, cleanUpdates);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `vehicles/${id}`);
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Redacting/Updating vehicle ${id} in Firestore...`);
+        const fullVehicle = updatedList.find(v => v.id === id);
+        if (fullVehicle) {
+          await setDoc(doc(db, 'vehicles', id), fullVehicle);
+          
+          // Trigger server metadata timestamp update
+          const newStamp = new Date().toISOString();
+          await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+          safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `vehicles/${id}`);
+      }
     }
-  };
+  }, [vehicles, leads, syncToCache]);
 
-  const deleteVehicle = async (id: string): Promise<void> => {
-    if (isFirebaseMock || !db) {
-      const updatedList = vehicles.filter(v => v.id !== id);
-      syncMockToLocalStorage(updatedList, leads);
-      return;
+  const deleteVehicle = useCallback(async (id: string): Promise<void> => {
+    // 1. Local sync
+    const updatedList = vehicles.filter(v => v.id !== id);
+    syncToCache(updatedList, leads);
+
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Removing vehicle ${id} from Firestore...`);
+        await deleteDoc(doc(db, 'vehicles', id));
+        
+        // Trigger server metadata timestamp update
+        const newStamp = new Date().toISOString();
+        await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+        safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `vehicles/${id}`);
+      }
     }
+  }, [vehicles, leads, syncToCache]);
 
-    try {
-      const ref = doc(db, 'vehicles', id);
-      await deleteDoc(ref);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `vehicles/${id}`);
-    }
-  };
-
-  const addLead = async (leadData: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<string> => {
+  const addLead = useCallback(async (leadData: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<string> => {
     const timestamp = new Date().toISOString();
     const newId = 'lead_' + Math.random().toString(36).substr(2, 9);
     const newLead: Lead = {
@@ -219,67 +425,100 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       updatedAt: timestamp,
     };
 
-    if (isFirebaseMock || !db) {
-      const updatedLeads = [newLead, ...leads];
-      syncMockToLocalStorage(vehicles, updatedLeads);
-      return newId;
+    // 1. Local sync
+    const updatedLeads = [newLead, ...leads];
+    syncToCache(vehicles, updatedLeads);
+
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Registering new CRM Inquiry ${newId} with Firestore...`);
+        await setDoc(doc(db, 'leads', newId), newLead);
+        
+        // Trigger server metadata timestamp update
+        const newStamp = new Date().toISOString();
+        await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+        safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `leads/${newId}`);
+      }
     }
 
-    try {
-      await setDoc(doc(db, 'leads', newId), newLead);
-      return newId;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `leads/${newId}`);
-      return '';
-    }
-  };
+    return newId;
+  }, [vehicles, leads, syncToCache]);
 
-  const updateLeadStatus = async (leadId: string, newStatus: Lead['status']): Promise<void> => {
+  const updateLeadStatus = useCallback(async (leadId: string, newStatus: Lead['status']): Promise<void> => {
     const timestamp = new Date().toISOString();
-    if (isFirebaseMock || !db) {
-      const updatedLeads = leads.map(l => l.id === leadId ? { ...l, status: newStatus, updatedAt: timestamp } : l);
-      syncMockToLocalStorage(vehicles, updatedLeads);
-      return;
-    }
 
-    try {
-      const ref = doc(db, 'leads', leadId);
-      await updateDoc(ref, { status: newStatus, updatedAt: timestamp });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `leads/${leadId}`);
-    }
-  };
+    // 1. Local sync
+    const updatedLeads = leads.map(l => l.id === leadId ? { ...l, status: newStatus, updatedAt: timestamp } : l);
+    syncToCache(vehicles, updatedLeads);
 
-  const updateLeadNotes = async (leadId: string, notes: string): Promise<void> => {
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Transitioning Lead ${leadId} status to ${newStatus} in Firestore...`);
+        const targetLead = updatedLeads.find(l => l.id === leadId);
+        if (targetLead) {
+          await setDoc(doc(db, 'leads', leadId), targetLead);
+          
+          // Trigger server metadata timestamp update
+          const newStamp = new Date().toISOString();
+          await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+          safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `leads/${leadId}`);
+      }
+    }
+  }, [vehicles, leads, syncToCache]);
+
+  const updateLeadNotes = useCallback(async (leadId: string, notes: string): Promise<void> => {
     const timestamp = new Date().toISOString();
-    if (isFirebaseMock || !db) {
-      const updatedLeads = leads.map(l => l.id === leadId ? { ...l, notes: notes, updatedAt: timestamp } : l);
-      syncMockToLocalStorage(vehicles, updatedLeads);
-      return;
-    }
 
-    try {
-      const ref = doc(db, 'leads', leadId);
-      await updateDoc(ref, { notes, updatedAt: timestamp });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `leads/${leadId}`);
-    }
-  };
+    // 1. Local sync
+    const updatedLeads = leads.map(l => l.id === leadId ? { ...l, notes, updatedAt: timestamp } : l);
+    syncToCache(vehicles, updatedLeads);
 
-  const deleteLead = async (leadId: string): Promise<void> => {
-    if (isFirebaseMock || !db) {
-      const updatedLeads = leads.filter(l => l.id !== leadId);
-      syncMockToLocalStorage(vehicles, updatedLeads);
-      return;
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Adjusting notes for Lead ${leadId} in Firestore...`);
+        const targetLead = updatedLeads.find(l => l.id === leadId);
+        if (targetLead) {
+          await setDoc(doc(db, 'leads', leadId), targetLead);
+          
+          // Trigger server metadata timestamp update
+          const newStamp = new Date().toISOString();
+          await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+          safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `leads/${leadId}`);
+      }
     }
+  }, [vehicles, leads, syncToCache]);
 
-    try {
-      const ref = doc(db, 'leads', leadId);
-      await deleteDoc(ref);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `leads/${leadId}`);
+  const deleteLead = useCallback(async (leadId: string): Promise<void> => {
+    // 1. Local sync
+    const updatedLeads = leads.filter(l => l.id !== leadId);
+    syncToCache(vehicles, updatedLeads);
+
+    // 2. Firestore sync
+    if (!isFirebaseMock && db) {
+      try {
+        console.log(`VehicleContext: Deleting Lead ${leadId} from Firestore...`);
+        await deleteDoc(doc(db, 'leads', leadId));
+        
+        // Trigger server metadata timestamp update
+        const newStamp = new Date().toISOString();
+        await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+        safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `leads/${leadId}`);
+      }
     }
-  };
+  }, [vehicles, leads, syncToCache]);
 
   return (
     <VehicleContext.Provider value={{ 
@@ -293,7 +532,9 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       updateLeadNotes,
       deleteLead,
       isLoading,
-      seedDataIfNeeded
+      seedDataIfNeeded,
+      fetchLeads,
+      isLeadsLoading
     }}>
       {children}
     </VehicleContext.Provider>
@@ -307,3 +548,4 @@ export const useVehicles = () => {
   }
   return context;
 };
+
