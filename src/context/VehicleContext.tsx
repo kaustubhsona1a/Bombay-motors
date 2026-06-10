@@ -8,6 +8,7 @@ import { Vehicle, Lead } from '../types';
 import { INITIAL_VEHICLES } from '../data/mockVehicles';
 import { INITIAL_LEADS } from '../data/mockLeads';
 import { db, isFirebaseMock, handleFirestoreError, OperationType } from '../firebase';
+import { writeVehiclesToCache, logReadReductionReport } from '../utils/cacheHelper';
 import { 
   collection, 
   doc, 
@@ -94,6 +95,16 @@ const safeStorage = {
   }
 };
 
+// Define Cooldowns to save read quota (O(N) load checks happen at most once every METADATA_COOLDOWN_MS)
+const METADATA_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes cooldown
+const LEADS_SERVER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes cooldown
+
+// Module-level in-memory state fallbacks to bypass localStorage lookup failures and guard against bot traversal patterns
+let memoryVehicles: Vehicle[] | null = null;
+let memoryLeads: Lead[] | null = null;
+let memoryVehiclesLastMetaCheck: number | null = null;
+let memoryLeadsLastMetaCheck: number | null = null;
+
 interface VehicleContextType {
   vehicles: Vehicle[];
   leads: Lead[];
@@ -114,12 +125,14 @@ const VehicleContext = createContext<VehicleContextType | undefined>(undefined);
 
 export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [vehicles, setVehicles] = useState<Vehicle[]>(() => {
+    if (memoryVehicles) return memoryVehicles;
     // Synchronous safe loading of cache prior to mounting reduces initial flicker layout-shift
     const cached = safeStorage.getItem('bombay_motors_vehicles');
     return cached ? JSON.parse(cached) : INITIAL_VEHICLES;
   });
   
   const [leads, setLeads] = useState<Lead[]>(() => {
+    if (memoryLeads) return memoryLeads;
     const cached = safeStorage.getItem('bombay_motors_leads');
     return cached ? JSON.parse(cached) : INITIAL_LEADS;
   });
@@ -134,6 +147,33 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const initializeVehicles = async () => {
       if (active) {
         setIsLoading(true);
+      }
+
+      const now = Date.now();
+      const localMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
+      const localVehiclesStr = safeStorage.getItem('bombay_motors_vehicles');
+      const localLastCheckStr = safeStorage.getItem('bombay_motors_vehicles_last_meta_check');
+
+      const lastCheckTime = localLastCheckStr ? Number(localLastCheckStr) : memoryVehiclesLastMetaCheck;
+
+      // COOLDOWN GUARD: If we checked the metadata recently and have valid data, skip Firestore entirely
+      if (lastCheckTime && now - lastCheckTime < METADATA_COOLDOWN_MS && (memoryVehicles || (localVehiclesStr && localMetaStamp))) {
+        console.log('🎯 VehicleContext: [CACHE HIT] Showroom cooldown active. Resolving inventory natively from fully verified local storage.');
+        if (memoryVehicles && active) {
+          setVehicles(memoryVehicles);
+          logReadReductionReport(memoryVehicles.length, true);
+        } else if (localVehiclesStr && active) {
+          try {
+            const parsed = JSON.parse(localVehiclesStr);
+            memoryVehicles = parsed;
+            setVehicles(parsed);
+            logReadReductionReport(parsed.length, true);
+          } catch (_) {}
+        }
+        if (active) {
+          setIsLoading(false);
+        }
+        return;
       }
 
       // Check if active Firestore connection is online, perform background sync with cooldown
@@ -153,12 +193,24 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
             console.warn('VehicleContext: Config metadata doc not found or unreachable. Falling back to active scan.', metaErr);
           }
 
-          const localMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
-          const localVehiclesStr = safeStorage.getItem('bombay_motors_vehicles');
+          // Update check timestamp
+          memoryVehiclesLastMetaCheck = now;
+          safeStorage.setItem('bombay_motors_vehicles_last_meta_check', String(now));
+
+          const currentLocalMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
+          const currentLocalVehiclesStr = safeStorage.getItem('bombay_motors_vehicles');
 
           // METADATA MATCH CHECK: If remote timestamp matches cached timestamp, load directly from local state / cache
-          if (remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === localMetaStamp && localVehiclesStr) {
-            console.log('VehicleContext: Showroom is up to date (Metadata timestamp matches). 0 Firebase reads consumed for query.');
+          if (remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === currentLocalMetaStamp && currentLocalVehiclesStr) {
+            console.log('🎯 VehicleContext: [CACHE HIT] Showroom is up to date (Metadata timestamp matches). Loading from offline database cache.');
+            try {
+              const parsed = JSON.parse(currentLocalVehiclesStr);
+              memoryVehicles = parsed;
+              if (active) {
+                setVehicles(parsed);
+              }
+              logReadReductionReport(parsed.length, true);
+            } catch (_) {}
             if (active) {
               setIsLoading(false);
             }
@@ -166,7 +218,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
 
           // Fetch the entire collection if cache is stale/empty
-          console.log('VehicleContext: Cache is either stale, mismatched, or empty. Syncing catalog with full database document read...');
+          console.log('⚡ VehicleContext: [CACHE MISS] Showroom cache is either stale, mismatched, or empty. Syncing catalog with full database document read...');
           const vehicleSnap = await getDocs(collection(db, 'vehicles'));
           const firestoreVehicles: Vehicle[] = [];
           
@@ -183,11 +235,13 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const initStamp = new Date().toISOString();
             await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
             
+            memoryVehicles = INITIAL_VEHICLES;
             if (active) {
               setVehicles(INITIAL_VEHICLES);
             }
-            safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(INITIAL_VEHICLES));
+            writeVehiclesToCache(INITIAL_VEHICLES);
             safeStorage.setItem('bombay_motors_vehicles_last_server_update', initStamp);
+            logReadReductionReport(INITIAL_VEHICLES.length, false);
           } else {
             // Sort by creation datetime desc
             firestoreVehicles.sort((a, b) => {
@@ -197,6 +251,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
             });
 
             // Update local memory and cache values
+            memoryVehicles = firestoreVehicles;
             if (active) {
               setVehicles(firestoreVehicles);
             }
@@ -208,8 +263,9 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
               await setDoc(metaDocRef, { lastUpdatedAt: currentMetaStamp });
             }
 
-            safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(firestoreVehicles));
+            writeVehiclesToCache(firestoreVehicles);
             safeStorage.setItem('bombay_motors_vehicles_last_server_update', currentMetaStamp);
+            logReadReductionReport(firestoreVehicles.length, false);
           }
         } catch (fErr) {
           console.warn('VehicleContext: Background inventory list syncing failed (likely quota limit reached). Continuing on cache.', fErr);
@@ -230,9 +286,11 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Helper to sync local state and cache
   const syncToCache = useCallback((newVehicles: Vehicle[], newLeads: Lead[]) => {
+    memoryVehicles = newVehicles;
+    memoryLeads = newLeads;
     setVehicles(newVehicles);
     setLeads(newLeads);
-    safeStorage.setItem('bombay_motors_vehicles', JSON.stringify(newVehicles));
+    writeVehiclesToCache(newVehicles);
     safeStorage.setItem('bombay_motors_leads', JSON.stringify(newLeads));
   }, []);
 
@@ -242,6 +300,29 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     setIsLeadsLoading(true);
     try {
+      const now = Date.now();
+      const localMetaStamp = safeStorage.getItem('bombay_motors_leads_last_server_update');
+      const localLeadsStr = safeStorage.getItem('bombay_motors_leads');
+      const localLastCheckStr = safeStorage.getItem('bombay_motors_leads_last_meta_check');
+
+      const lastCheckTime = localLastCheckStr ? Number(localLastCheckStr) : memoryLeadsLastMetaCheck;
+
+      // LEADS COOLDOWN GUARD: If fetched/checked recently, bypass querying completely
+      if (!force && lastCheckTime && now - lastCheckTime < LEADS_SERVER_COOLDOWN_MS && (memoryLeads || (localLeadsStr && localMetaStamp))) {
+        console.log('VehicleContext: Leads metadata cooldown active. Loading locally.');
+        if (memoryLeads) {
+          setLeads(memoryLeads);
+        } else if (localLeadsStr) {
+          try {
+            const parsed = JSON.parse(localLeadsStr);
+            memoryLeads = parsed;
+            setLeads(parsed);
+          } catch (_) {}
+        }
+        setIsLeadsLoading(false);
+        return;
+      }
+
       console.log('VehicleContext: Verifying CRM leads metadata with Firestore...');
       const metaDocRef = doc(db, 'config', 'leads_meta');
       let remoteMeta: any = null;
@@ -255,14 +336,19 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         console.warn('VehicleContext: CRM meta timestamp doc not found or unreachable:', metaErr);
       }
 
-      const localMetaStamp = safeStorage.getItem('bombay_motors_leads_last_server_update');
-      const localLeadsStr = safeStorage.getItem('bombay_motors_leads');
+      // Update check timestamp
+      memoryLeadsLastMetaCheck = now;
+      safeStorage.setItem('bombay_motors_leads_last_meta_check', String(now));
+
+      const currentLocalMetaStamp = safeStorage.getItem('bombay_motors_leads_last_server_update');
+      const currentLocalLeadsStr = safeStorage.getItem('bombay_motors_leads');
 
       // METADATA MATCH CHECK: If leads haven't updated, skip reads completely!
-      if (!force && remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === localMetaStamp && localLeadsStr) {
+      if (!force && remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === currentLocalMetaStamp && currentLocalLeadsStr) {
         console.log('VehicleContext: CRM inquiries are up to date (Metadata timestamp matches). Skipping database read scan.');
         try {
-          const cachedLeads = JSON.parse(localLeadsStr);
+          const cachedLeads = JSON.parse(currentLocalLeadsStr);
+          memoryLeads = cachedLeads;
           setLeads(cachedLeads);
         } catch (_) {}
         setIsLeadsLoading(false);
@@ -288,10 +374,12 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const initStamp = new Date().toISOString();
         await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
 
+        memoryLeads = INITIAL_LEADS;
         setLeads(INITIAL_LEADS);
         safeStorage.setItem('bombay_motors_leads', JSON.stringify(INITIAL_LEADS));
         safeStorage.setItem('bombay_motors_leads_last_server_update', initStamp);
       } else {
+        memoryLeads = firestoreLeads;
         setLeads(firestoreLeads);
         const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
         

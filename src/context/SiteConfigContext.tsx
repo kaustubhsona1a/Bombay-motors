@@ -38,8 +38,12 @@ const DEFAULT_SITE_CONFIG: SiteConfig = {
   googleReviewsUrl: "https://search.google.com/local/reviews?placeid=ChIJSV7H-MTEzzsRC0aI03x7Oig"
 };
 
-// Cooldown of 15 minutes for site config fetch to save premium read units
-const CACHE_COOLDOWN_MS = 15 * 60 * 1000;
+// Cooldown of 12 hours for site config fetch to save premium/free read units
+const CACHE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+
+// Module-level in-memory state fallbacks to bypass localStorage lookup failures and guard against bot traversal patterns
+let memorySiteConfigCache: SiteConfig | null = null;
+let memorySiteConfigLastFetch: number | null = null;
 
 // Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
 const safeGetItem = (key: string): string | null => {
@@ -66,6 +70,7 @@ const SiteConfigContext = createContext<SiteConfigContextType | undefined>(undef
 
 export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(() => {
+    if (memorySiteConfigCache) return memorySiteConfigCache;
     const saved = safeGetItem('bombay_motors_site_config');
     return saved ? JSON.parse(saved) : DEFAULT_SITE_CONFIG;
   });
@@ -82,13 +87,25 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       // Read-optimization: Check if we have fetched recently
       const lastFetchedStr = safeGetItem('bombay_motors_site_config_last_fetch');
       const now = Date.now();
-      if (lastFetchedStr) {
-        const lastFetched = Number(lastFetchedStr);
-        if (now - lastFetched < CACHE_COOLDOWN_MS) {
-          console.log('SiteConfig: Loading cached version to protect reads (cooldown active).');
-          setIsLoading(false);
-          return;
+      const lastFetched = lastFetchedStr ? Number(lastFetchedStr) : memorySiteConfigLastFetch;
+
+      // Check both local storage AND in-memory cooldown fallback
+      if (lastFetched && now - lastFetched < CACHE_COOLDOWN_MS) {
+        if (memorySiteConfigCache) {
+          setSiteConfig(memorySiteConfigCache);
+        } else if (lastFetchedStr) {
+          const saved = safeGetItem('bombay_motors_site_config');
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              memorySiteConfigCache = parsed;
+              setSiteConfig(parsed);
+            } catch (_) {}
+          }
         }
+        console.log('SiteConfig: Loading cached version to protect reads (cooldown active). 0 queries executed.');
+        setIsLoading(false);
+        return;
       }
 
       try {
@@ -100,6 +117,8 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const remoteConfig = docSnap.data().config as SiteConfig;
           if (remoteConfig) {
             setSiteConfig(remoteConfig);
+            memorySiteConfigCache = remoteConfig;
+            memorySiteConfigLastFetch = now;
             safeSetItem('bombay_motors_site_config', JSON.stringify(remoteConfig));
             safeSetItem('bombay_motors_site_config_last_fetch', String(now));
           }
@@ -107,6 +126,8 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           // If the config doesn't exist in live Firestore yet, save our current active configuration to seed it
           console.log('SiteConfig: Seed configuration doc not found on Firestore. Uploading default setup.');
           await setDoc(configDocRef, { config: siteConfig });
+          memorySiteConfigCache = siteConfig;
+          memorySiteConfigLastFetch = now;
           safeSetItem('bombay_motors_site_config_last_fetch', String(now));
         }
       } catch (err: any) {
@@ -131,6 +152,7 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     setSiteConfig(merged);
+    memorySiteConfigCache = merged;
     safeSetItem('bombay_motors_site_config', JSON.stringify(merged));
 
     if (!isFirebaseMock && db) {
@@ -138,6 +160,7 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       try {
         console.log('SiteConfig: Updating configurations document to Firestore...');
         await setDoc(doc(db, 'site_config', 'global'), { config: merged });
+        memorySiteConfigLastFetch = Date.now();
         safeSetItem('bombay_motors_site_config_last_fetch', String(Date.now()));
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
