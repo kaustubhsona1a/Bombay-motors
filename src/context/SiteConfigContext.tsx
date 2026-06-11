@@ -45,19 +45,45 @@ const CACHE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 let memorySiteConfigCache: SiteConfig | null = null;
 let memorySiteConfigLastFetch: number | null = null;
 
+// Window name fallback cache to survive sandboxed iframe reloads and hot-compiles
+const windowCache = {
+  get(key: string): string | null {
+    try {
+      if (window.name && window.name.startsWith('{')) {
+        const data = JSON.parse(window.name);
+        return data[key] || null;
+      }
+    } catch (_) {}
+    return null;
+  },
+  set(key: string, value: string): void {
+    try {
+      let data: Record<string, string> = {};
+      if (window.name && window.name.startsWith('{')) {
+        try {
+          data = JSON.parse(window.name);
+        } catch (_) {}
+      }
+      data[key] = value;
+      window.name = JSON.stringify(data);
+    } catch (_) {}
+  }
+};
+
 // Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
 const safeGetItem = (key: string): string | null => {
   try {
-    return localStorage.getItem(key);
-  } catch (_) {
-    return null;
-  }
+    const val = localStorage.getItem(key);
+    if (val) return val;
+  } catch (_) {}
+  return windowCache.get(key);
 };
 
 const safeSetItem = (key: string, value: string): void => {
   try {
     localStorage.setItem(key, value);
   } catch (_) {}
+  windowCache.set(key, value);
 };
 
 interface SiteConfigContextType {
@@ -111,6 +137,7 @@ export const SiteConfigProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       try {
         console.log('SiteConfig: Performing background Firestore fetch for global operational configurations...');
         const configDocRef = doc(db, 'site_config', 'global');
+        console.log("[FIRESTORE QUERY] site_config");
         const docSnap = await getDoc(configDocRef);
 
         if (docSnap.exists()) {

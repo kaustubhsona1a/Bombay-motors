@@ -52,6 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Check role in Firestore users/uid doc
           try {
             const userDocRef = doc(db, 'users', firebaseUser.uid);
+            console.log("[FIRESTORE QUERY] users");
             const userSnap = await getDoc(userDocRef);
             if (userSnap.exists()) {
               role = (userSnap.data() as UserProfile).role || 'user';

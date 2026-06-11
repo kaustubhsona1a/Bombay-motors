@@ -24,18 +24,30 @@ export function getPayloadSize(data: any): { bytes: number; kb: number; mb: numb
 }
 
 /**
- * Strips base64 data, image blobs, long descriptions, inspection notes,
- * and other large non-essential fields to create a lightweight vehicle list for caching.
+ * Strips bloated image blobs, exceptionally huge base64 strings, long descriptions,
+ * inspection notes, and other large non-essential fields to create a lightweight vehicle list for caching.
  */
 export function sanitizeVehiclesForCache(vehicles: Vehicle[]): Vehicle[] {
   return vehicles.map(v => {
-    // Exclude image blobs and base64 strings, keeping only valid HTTP/HTTPS URLs < 500 chars to avoid cache bloating
+    // Keep valid HTTP/HTTPS URLs < 500 chars, and lightweight Base64 data URLs < 150,000 chars.
+    // This allows local uploaded images to survive page refreshes, whilst protecting against localStorage bloating.
     const cleanImages = (v.images || []).filter(img => {
       if (!img) return false;
       const isBase64 = img.startsWith('data:');
       const isBlob = img.startsWith('blob:');
-      const isTooLong = img.length > 500;
-      return !isBase64 && !isBlob && !isTooLong;
+      
+      if (isBlob) {
+        // Blob URLs are session-specific and fail instantly on page refresh/new session, so don't cache them.
+        return false;
+      }
+      
+      if (isBase64) {
+        // Allow reasonably sized base64 images (under 150,000 chars) to resolve the refresh image loss.
+        return img.length <= 150000;
+      }
+      
+      // Standard HTTP/HTTPS URLs must be under 1000 characters to prevent malicious bloated strings.
+      return img.length <= 1000;
     });
 
     return {
@@ -118,7 +130,8 @@ export function analyzeSpaceConsumption(vehicles: Vehicle[]): void {
 }
 
 /**
- * Safely serializes and writes the vehicle inventory to localStorage with transactional validation checks.
+ * Safely serializes and writes the vehicle inventory to localStorage with transactional validation checks
+ * and dynamic adaptive fallback compaction on storage limit triggers.
  */
 export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
   try {
@@ -131,19 +144,50 @@ export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
     // 3. Measure exact serialized sizes
     const beforeSize = getPayloadSize(vehicles);
     const afterSize = getPayloadSize(sanitized);
-    const serializedStr = JSON.stringify(sanitized);
+    let serializedStr = JSON.stringify(sanitized);
 
     console.log('=== VEHICLE CACHE WRITE INITIATION ===');
     console.log(`Unsanitized Payload: ${beforeSize.kb.toFixed(2)} KB (${beforeSize.mb.toFixed(3)} MB)`);
     console.log(`Sanitized Cache Payload: ${afterSize.kb.toFixed(2)} KB (${afterSize.mb.toFixed(3)} MB)`);
     console.log(`💾 Compaction space savings: +${(100 - (afterSize.bytes / (beforeSize.bytes || 1)) * 100).toFixed(1)}% reduced footprint`);
 
-    // 4. Try-catch block specifically bound to localStorage
+    // 4. Try-catch block specifically bound to localStorage with progressive compaction fallbacks
     try {
       localStorage.setItem('bombay_motors_vehicles', serializedStr);
     } catch (storageError: any) {
-      console.error('❌ VehicleContext: safeStorage write failure. Broader storage quota is full.', storageError);
-      return false;
+      console.warn('⚠️ VehicleContext: localStorage write threw QuotaExceededError. Initiating Stage 1 adaptive compaction...');
+      
+      // Stage 1 Compaction: Keep only the first image per vehicle and heavily trim descriptions
+      const compactStage1 = sanitized.map(v => ({
+        ...v,
+        images: v.images && v.images.length > 0 ? [v.images[0]] : [],
+        description: v.description ? v.description.substring(0, 60) + '...' : '',
+        inspectionNotes: '',
+        features: []
+      }));
+      
+      try {
+        serializedStr = JSON.stringify(compactStage1);
+        localStorage.setItem('bombay_motors_vehicles', serializedStr);
+        console.log(`✅ Stage 1 Cache Compaction parsed successfully: ${getPayloadSize(compactStage1).kb.toFixed(2)} KB`);
+      } catch (errStage1) {
+        console.warn('⚠️ VehicleContext: Stage 1 Compaction also failed. Initiating Stage 2 extreme compaction (removing all data URLs entirely)...');
+        
+        // Stage 2 Compaction: Remove all base64 data URLs entirely and leave only plain text fields
+        const compactStage2 = compactStage1.map(v => ({
+          ...v,
+          images: (v.images || []).filter(img => !img.startsWith('data:'))
+        }));
+        
+        try {
+          serializedStr = JSON.stringify(compactStage2);
+          localStorage.setItem('bombay_motors_vehicles', serializedStr);
+          console.log(`✅ Stage 2 Cache Compaction parsed successfully: ${getPayloadSize(compactStage2).kb.toFixed(2)} KB`);
+        } catch (errStage2) {
+          console.error('❌ VehicleContext: All cache compaction levels exhausted or storage completely blocked by user policies.', errStage2);
+          return false;
+        }
+      }
     }
 
     // 5. Deep validator readback verification

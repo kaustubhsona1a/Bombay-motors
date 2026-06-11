@@ -5,7 +5,13 @@
 
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { 
+  initializeFirestore, 
+  persistentLocalCache, 
+  persistentMultipleTabManager,
+  doc, 
+  getDocFromServer 
+} from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -21,7 +27,11 @@ if (firebaseConfig.apiKey === 'mock-api-key-bombay-motors' || !firebaseConfig.ap
 } else {
   try {
     firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
+    db = initializeFirestore(firebaseApp, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager()
+      })
+    }, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
     auth = getAuth(firebaseApp);
     storage = getStorage(firebaseApp);
     isFirebaseMock = false;
