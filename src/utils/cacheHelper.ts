@@ -129,11 +129,59 @@ export function analyzeSpaceConsumption(vehicles: Vehicle[]): void {
   console.log('============================================');
 }
 
+// Window name fallback cache to survive sandboxed iframe reloads and hot-compiles
+const windowCache = {
+  get(key: string): string | null {
+    try {
+      if (typeof window !== 'undefined' && window.name && window.name.startsWith('{')) {
+        const data = JSON.parse(window.name);
+        return data[key] || null;
+      }
+    } catch (_) {}
+    return null;
+  },
+  set(key: string, value: string): void {
+    try {
+      if (typeof window !== 'undefined') {
+        let data: Record<string, string> = {};
+        if (window.name && window.name.startsWith('{')) {
+          try {
+            data = JSON.parse(window.name);
+          } catch (_) {}
+        }
+        data[key] = value;
+        window.name = JSON.stringify(data);
+      }
+    } catch (_) {}
+  }
+};
+
+// Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
+const safeStorage = {
+  getItem(key: string): string | null {
+    try {
+      const val = localStorage.getItem(key);
+      if (val) return val;
+    } catch (e) {
+      console.warn('safeStorage in cacheHelper: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+    return windowCache.get(key);
+  },
+  setItem(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      console.warn('safeStorage in cacheHelper: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+    windowCache.set(key, value);
+  }
+};
+
 /**
  * Safely serializes and writes the vehicle inventory to localStorage with transactional validation checks
  * and dynamic adaptive fallback compaction on storage limit triggers.
  */
-export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
+export function writeVehiclesToCache(vehicles: Vehicle[], key: string = 'bombay_motors_vehicles'): boolean {
   try {
     // 1. Perform a space analysis prior to sanitization
     analyzeSpaceConsumption(vehicles);
@@ -146,16 +194,16 @@ export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
     const afterSize = getPayloadSize(sanitized);
     let serializedStr = JSON.stringify(sanitized);
 
-    console.log('=== VEHICLE CACHE WRITE INITIATION ===');
+    console.log(`=== VEHICLE CACHE WRITE INITIATION [KEY: ${key}] ===`);
     console.log(`Unsanitized Payload: ${beforeSize.kb.toFixed(2)} KB (${beforeSize.mb.toFixed(3)} MB)`);
     console.log(`Sanitized Cache Payload: ${afterSize.kb.toFixed(2)} KB (${afterSize.mb.toFixed(3)} MB)`);
     console.log(`💾 Compaction space savings: +${(100 - (afterSize.bytes / (beforeSize.bytes || 1)) * 100).toFixed(1)}% reduced footprint`);
 
-    // 4. Try-catch block specifically bound to localStorage with progressive compaction fallbacks
+    // 4. Try-catch block specifically bound to safeStorage with progressive compaction fallbacks
     try {
-      localStorage.setItem('bombay_motors_vehicles', serializedStr);
+      safeStorage.setItem(key, serializedStr);
     } catch (storageError: any) {
-      console.warn('⚠️ VehicleContext: localStorage write threw QuotaExceededError. Initiating Stage 1 adaptive compaction...');
+      console.warn(`⚠️ VehicleContext: safeStorage write for key ${key} threw QuotaExceededError. Initiating Stage 1 adaptive compaction...`);
       
       // Stage 1 Compaction: Keep only the first image per vehicle and heavily trim descriptions
       const compactStage1 = sanitized.map(v => ({
@@ -168,10 +216,10 @@ export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
       
       try {
         serializedStr = JSON.stringify(compactStage1);
-        localStorage.setItem('bombay_motors_vehicles', serializedStr);
-        console.log(`✅ Stage 1 Cache Compaction parsed successfully: ${getPayloadSize(compactStage1).kb.toFixed(2)} KB`);
+        safeStorage.setItem(key, serializedStr);
+        console.log(`✅ Stage 1 Cache Compaction parsed successfully for ${key}: ${getPayloadSize(compactStage1).kb.toFixed(2)} KB`);
       } catch (errStage1) {
-        console.warn('⚠️ VehicleContext: Stage 1 Compaction also failed. Initiating Stage 2 extreme compaction (removing all data URLs entirely)...');
+        console.warn(`⚠️ VehicleContext: Stage 1 Compaction also failed for ${key}. Initiating Stage 2 extreme compaction (removing all data URLs entirely)...`);
         
         // Stage 2 Compaction: Remove all base64 data URLs entirely and leave only plain text fields
         const compactStage2 = compactStage1.map(v => ({
@@ -181,26 +229,26 @@ export function writeVehiclesToCache(vehicles: Vehicle[]): boolean {
         
         try {
           serializedStr = JSON.stringify(compactStage2);
-          localStorage.setItem('bombay_motors_vehicles', serializedStr);
-          console.log(`✅ Stage 2 Cache Compaction parsed successfully: ${getPayloadSize(compactStage2).kb.toFixed(2)} KB`);
+          safeStorage.setItem(key, serializedStr);
+          console.log(`✅ Stage 2 Cache Compaction parsed successfully for ${key}: ${getPayloadSize(compactStage2).kb.toFixed(2)} KB`);
         } catch (errStage2) {
-          console.error('❌ VehicleContext: All cache compaction levels exhausted or storage completely blocked by user policies.', errStage2);
+          console.error(`❌ VehicleContext: All cache compaction levels exhausted or storage completely blocked for key ${key} by user policies.`, errStage2);
           return false;
         }
       }
     }
 
     // 5. Deep validator readback verification
-    const readbackStr = localStorage.getItem('bombay_motors_vehicles');
+    const readbackStr = safeStorage.getItem(key);
     if (readbackStr && readbackStr === serializedStr) {
-      console.log('✅ VehicleContext: bombay_motors_vehicles SUCCESSFULLY written to localStorage and verified.');
+      console.log(`✅ VehicleContext: ${key} SUCCESSFULLY written to safeStorage and verified.`);
       return true;
     } else {
-      console.warn('❌ VehicleContext: Cache write verification mismatch or was immediately deleted.');
+      console.warn(`❌ VehicleContext: Cache write verification mismatch or was immediately deleted for key ${key}.`);
       return false;
     }
   } catch (err: any) {
-    console.error('❌ VehicleContext: Fatal error caught inside writeVehiclesToCache utility:', err);
+    console.error(`❌ VehicleContext: Fatal error caught inside writeVehiclesToCache utility for key ${key}:`, err);
     return false;
   }
 }

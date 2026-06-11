@@ -85,7 +85,7 @@ export async function uploadImageToStorage(blobOrFile: Blob | File, path: string
   })();
 
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Firebase Storage upload timed out after 1.5 seconds')), 1500)
+    setTimeout(() => reject(new Error('Firebase Storage upload timed out after 15 seconds')), 15000)
   );
 
   try {

@@ -144,7 +144,7 @@ export const AddVehicle: React.FC = () => {
       
       const hasBase64 = optimizedImages.some(img => img.startsWith('data:image'));
       if (hasBase64) {
-        showToast('Image(s) optimized locally for instant preview!', 'success');
+        showToast('Image(s) saved in local database fallback mode. Please activate Firebase Storage inside Firebase console to support multiple high-res photos without limits!', 'warning');
       } else {
         showToast('Image(s) successfully hosted on Firebase Storage!', 'success');
       }

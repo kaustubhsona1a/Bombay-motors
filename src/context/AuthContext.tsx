@@ -21,13 +21,78 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Window name fallback cache to survive sandboxed iframe reloads and hot-compiles
+const windowCache = {
+  get(key: string): string | null {
+    try {
+      if (typeof window !== 'undefined' && window.name && window.name.startsWith('{')) {
+        const data = JSON.parse(window.name);
+        return data[key] || null;
+      }
+    } catch (_) {}
+    return null;
+  },
+  set(key: string, value: string): void {
+    try {
+      if (typeof window !== 'undefined') {
+        let data: Record<string, string> = {};
+        if (window.name && window.name.startsWith('{')) {
+          try {
+            data = JSON.parse(window.name);
+          } catch (_) {}
+        }
+        data[key] = value;
+        window.name = JSON.stringify(data);
+      }
+    } catch (_) {}
+  },
+  remove(key: string): void {
+    try {
+      if (typeof window !== 'undefined' && window.name && window.name.startsWith('{')) {
+        const data = JSON.parse(window.name);
+        delete data[key];
+        window.name = JSON.stringify(data);
+      }
+    } catch (_) {}
+  }
+};
+
+// Ultra-safe storage wrappers to handle sandboxed iframe storage access blocks gracefully
+const safeStorage = {
+  getItem(key: string): string | null {
+    try {
+      const val = localStorage.getItem(key);
+      if (val) return val;
+    } catch (e) {
+      console.warn('safeStorage in AuthContext: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+    return windowCache.get(key);
+  },
+  setItem(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      console.warn('safeStorage in AuthContext: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+    windowCache.set(key, value);
+  },
+  removeItem(key: string): void {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      console.warn('safeStorage in AuthContext: localStorage blocked by sandboxed iframe security policies.', e);
+    }
+    windowCache.remove(key);
+  }
+};
+
 // Bootstrapped admin email from metadata
 const BOOTSTRAPPED_ADMIN_EMAIL = 'bombaymotors55@gmail.com';
 const MOCK_ADMIN_EMAIL = 'mock_user@gmail.com';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem('bombay_motors_user');
+    const saved = safeStorage.getItem('bombay_motors_user');
     return saved ? JSON.parse(saved) : null;
   });
   const [isLoading, setIsLoading] = useState(true);
@@ -78,10 +143,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         setUser(profile);
-        localStorage.setItem('bombay_motors_user', JSON.stringify(profile));
+        safeStorage.setItem('bombay_motors_user', JSON.stringify(profile));
       } else {
         // If logged out from Firebase, check if there's a stored mock admin session
-        const storedUser = localStorage.getItem('bombay_motors_user');
+        const storedUser = safeStorage.getItem('bombay_motors_user');
         if (storedUser) {
           const parsed = JSON.parse(storedUser);
           if (parsed.uid.startsWith('mock_')) {
@@ -89,7 +154,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUser(parsed);
           } else {
             setUser(null);
-            localStorage.removeItem('bombay_motors_user');
+            safeStorage.removeItem('bombay_motors_user');
           }
         } else {
           setUser(null);
@@ -136,7 +201,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       role: 'admin'
     };
     setUser(demoProfile);
-    localStorage.setItem('bombay_motors_user', JSON.stringify(demoProfile));
+    safeStorage.setItem('bombay_motors_user', JSON.stringify(demoProfile));
   };
 
   const signInWithCredentials = async (usernameOrEmail: string, pass: string): Promise<boolean> => {
@@ -166,7 +231,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
       
       setUser(adminProfile);
-      localStorage.setItem('bombay_motors_user', JSON.stringify(adminProfile));
+      safeStorage.setItem('bombay_motors_user', JSON.stringify(adminProfile));
       return true;
     }
     
@@ -174,7 +239,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOutUser = async () => {
-    localStorage.removeItem('bombay_motors_user');
+    safeStorage.removeItem('bombay_motors_user');
     setUser(null);
 
     if (!isFirebaseMock && auth) {

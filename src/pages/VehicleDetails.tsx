@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useVehicles } from '../context/VehicleContext';
 import { useSiteConfig } from '../context/SiteConfigContext';
 import { useToast } from '../context/ToastContext';
+import { Vehicle } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   ChevronLeft, 
@@ -27,11 +28,31 @@ import {
 export const VehicleDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { vehicles, addLead } = useVehicles();
+  const { vehicles, addLead, getVehicleById } = useVehicles();
   const { siteConfig } = useSiteConfig();
   const { showToast } = useToast();
 
-  const vehicle = vehicles.find((v) => v.id === id);
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [isDetailsLoading, setIsDetailsLoading] = useState(true);
+
+  useEffect(() => {
+    if (!id) return;
+
+    let active = true;
+    const fetchVehicle = async () => {
+      setIsDetailsLoading(true);
+      const res = await getVehicleById(id);
+      if (active) {
+        setVehicle(res);
+        setIsDetailsLoading(false);
+      }
+    };
+
+    fetchVehicle();
+    return () => {
+      active = false;
+    };
+  }, [id, getVehicleById]);
 
   // States
   const [activeImgIdx, setActiveImgIdx] = useState(0);
@@ -53,6 +74,15 @@ export const VehicleDetails: React.FC = () => {
     const estEmi = Math.round(priceInLakhs * 2060);
     return estEmi.toLocaleString('en-IN');
   };
+
+  if (isDetailsLoading) {
+    return (
+      <div className="bg-[#09090b] min-h-screen text-white flex flex-col justify-center items-center p-6 text-center">
+        <div className="w-8 h-8 border-2 border-t-transparent border-[#c5a059] rounded-full animate-spin mb-4" />
+        <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Retargeting automobile coordinates...</p>
+      </div>
+    );
+  }
 
   if (!vehicle) {
     return (

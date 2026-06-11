@@ -23,19 +23,21 @@ import {
 
 export const InventoryManagement: React.FC = () => {
   const { isAdmin } = useAuth();
-  const { vehicles, deleteVehicle, updateVehicle, seedDataIfNeeded, isLoading } = useVehicles();
+  const { vehicles, deleteVehicle, updateVehicle, seedDataIfNeeded, isLoading, fetchFullInventory } = useVehicles();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
   // Dialog State for sandbox-friendly delete confirmation
   const [vehicleToDelete, setVehicleToDelete] = React.useState<{ id: string; name: string } | null>(null);
 
-  // Route protection - security check
+  // Route protection - security check & full warehouse inventory load
   React.useEffect(() => {
-    if (!isAdmin) {
+    if (isAdmin) {
+      fetchFullInventory();
+    } else {
       navigate('/dealer-management');
     }
-  }, [isAdmin, navigate]);
+  }, [isAdmin, navigate, fetchFullInventory]);
 
   const handleStatusChange = async (id: string, currentStatus: string, newStatus: any) => {
     try {

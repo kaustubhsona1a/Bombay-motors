@@ -9,6 +9,7 @@ import { INITIAL_VEHICLES } from '../data/mockVehicles';
 import { INITIAL_LEADS } from '../data/mockLeads';
 import { db, isFirebaseMock, handleFirestoreError, OperationType } from '../firebase';
 import { writeVehiclesToCache, logReadReductionReport } from '../utils/cacheHelper';
+import { incrementReads, incrementWrites } from '../utils/metrics';
 import { 
   collection, 
   doc, 
@@ -20,7 +21,8 @@ import {
   query, 
   orderBy, 
   limit,
-  onSnapshot
+  onSnapshot,
+  where
 } from 'firebase/firestore';
 
 // Helper to sanitize and map Firestore Vehicle documents
@@ -142,6 +144,7 @@ let memoryVehicles: Vehicle[] | null = null;
 let memoryLeads: Lead[] | null = null;
 let memoryVehiclesLastMetaCheck: number | null = null;
 let memoryLeadsLastMetaCheck: number | null = null;
+let memoryFullVehiclesLastMetaCheck: number | null = null;
 
 interface VehicleContextType {
   vehicles: Vehicle[];
@@ -157,6 +160,8 @@ interface VehicleContextType {
   seedDataIfNeeded: () => Promise<void>;
   fetchLeads: (force?: boolean) => Promise<void>;
   isLeadsLoading: boolean;
+  fetchFullInventory: (force?: boolean) => Promise<void>;
+  getVehicleById: (id: string) => Promise<Vehicle | null>;
 }
 
 const VehicleContext = createContext<VehicleContextType | undefined>(undefined);
@@ -177,6 +182,18 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
   
   const [isLoading, setIsLoading] = useState(true);
   const [isLeadsLoading, setIsLeadsLoading] = useState(false);
+  const [hasFullInventoryLoaded, setHasFullInventoryLoaded] = useState(false);
+
+  // Stable references mapping the latest state values to completely avoid identity re-triggers
+  const vehiclesRef = React.useRef(vehicles);
+  useEffect(() => {
+    vehiclesRef.current = vehicles;
+  }, [vehicles]);
+
+  const hasFullInventoryLoadedRef = React.useRef(hasFullInventoryLoaded);
+  useEffect(() => {
+    hasFullInventoryLoadedRef.current = hasFullInventoryLoaded;
+  }, [hasFullInventoryLoaded]);
 
   // Initialize and load vehicles using our Smart Metadata-Gated Handshake Protocol.
   // This executes exactly ONE lookup (1 document fetch of "vehicles_meta") on startup (with a 5 min cooldown).
@@ -229,6 +246,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         try {
           console.log("[FIRESTORE QUERY] config (vehicles_meta)");
           const metaSnap = await getDoc(metaDocRef);
+          incrementReads(1);
           if (metaSnap.exists()) {
             remoteMeta = metaSnap.data();
           }
@@ -256,11 +274,19 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           return;
         }
 
-        // Fetch entire collection if stale or first-time load
-        console.log('⚡ VehicleContext: [CACHE MISS] Fetching full showroom inventory from Firestore...');
+        // Fetch only active listings (up to 100) for standard public visitors to minimize O(N) database scans
+        console.log('⚡ VehicleContext: [CACHE MISS] Fetching active showroom inventory from Firestore...');
         const vehiclesColRef = collection(db, 'vehicles');
-        console.log("[FIRESTORE QUERY] vehicles");
-        const snapshot = await getDocs(vehiclesColRef);
+        
+        // Single field limit query requires NO composite index creation in Firestore
+        const activeVehiclesQuery = query(
+          vehiclesColRef, 
+          where('status', '==', 'active'),
+          limit(100)
+        );
+        console.log("[FIRESTORE QUERY] active vehicles (limit 100)");
+        const snapshot = await getDocs(activeVehiclesQuery);
+        incrementReads(snapshot.size || 1);
 
         const firestoreVehicles: Vehicle[] = [];
         snapshot.forEach((docSnap) => {
@@ -268,18 +294,13 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         if (firestoreVehicles.length === 0) {
-          console.log('VehicleContext: Showroom is clean on Firestore. Seeding defaults...');
-          for (const v of INITIAL_VEHICLES) {
-            await setDoc(doc(db, 'vehicles', v.id), v);
-          }
-          const initStamp = new Date().toISOString();
-          await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
-
+          console.log('VehicleContext: Showroom is empty of listings.');
           if (active) {
-            setVehicles(INITIAL_VEHICLES);
-            memoryVehicles = INITIAL_VEHICLES;
-            writeVehiclesToCache(INITIAL_VEHICLES);
-            safeStorage.setItem('bombay_motors_vehicles_last_server_update', initStamp);
+            setVehicles([]);
+            memoryVehicles = [];
+            writeVehiclesToCache([]);
+            const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
+            safeStorage.setItem('bombay_motors_vehicles_last_server_update', currentMetaStamp);
           }
         } else {
           firestoreVehicles.sort((a, b) => {
@@ -318,14 +339,24 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
-  // Helper to sync local state and cache
+  // Helper to sync local state and cache robustly across active vs full tracks
   const syncToCache = useCallback((newVehicles: Vehicle[], newLeads: Lead[]) => {
     memoryVehicles = newVehicles;
     memoryLeads = newLeads;
     setVehicles(newVehicles);
     setLeads(newLeads);
-    writeVehiclesToCache(newVehicles);
+    
+    // Write Leads cache
     safeStorage.setItem('bombay_motors_leads', JSON.stringify(newLeads));
+
+    // Handle vehicles cache tracks intelligently to safeguard against clobbering
+    if (hasFullInventoryLoadedRef.current) {
+      writeVehiclesToCache(newVehicles, 'bombay_motors_full_vehicles');
+      const derivedActive = newVehicles.filter(v => v.status === 'active');
+      writeVehiclesToCache(derivedActive, 'bombay_motors_vehicles');
+    } else {
+      writeVehiclesToCache(newVehicles, 'bombay_motors_vehicles');
+    }
   }, []);
 
   // Lazy-loading fetch function for CRM Leads featuring Metadata gating
@@ -374,6 +405,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         console.log("[FIRESTORE QUERY] config (leads_meta)");
         const metaSnap = await getDoc(metaDocRef);
+        incrementReads(1);
         if (metaSnap.exists()) {
           remoteMeta = metaSnap.data();
         }
@@ -405,25 +437,21 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const leadsQuery = query(leadsColRef, orderBy('createdAt', 'desc'), limit(300));
       console.log("[FIRESTORE QUERY] leads");
       const leadSnap = await getDocs(leadsQuery);
+      incrementReads(leadSnap.size || 1);
 
       const firestoreLeads: Lead[] = [];
       leadSnap.forEach((docSnap) => {
         firestoreLeads.push(parseFirestoreLead(docSnap.data(), docSnap.id));
       });
 
-      // Special initial seeding for leads if the collection is completely empty
+      // Special check to allow a clean empty state for customer inquiries
       if (firestoreLeads.length === 0) {
-        console.log('VehicleContext: Bootstrapping CRM database with default client inquiries...');
-        for (const l of INITIAL_LEADS) {
-          await setDoc(doc(db, 'leads', l.id), l);
-        }
-        const initStamp = new Date().toISOString();
-        await setDoc(metaDocRef, { lastUpdatedAt: initStamp });
-
-        memoryLeads = INITIAL_LEADS;
-        setLeads(INITIAL_LEADS);
-        safeStorage.setItem('bombay_motors_leads', JSON.stringify(INITIAL_LEADS));
-        safeStorage.setItem('bombay_motors_leads_last_server_update', initStamp);
+        console.log('VehicleContext: CRM database is empty.');
+        memoryLeads = [];
+        setLeads([]);
+        safeStorage.setItem('bombay_motors_leads', JSON.stringify([]));
+        const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
+        safeStorage.setItem('bombay_motors_leads_last_server_update', currentMetaStamp);
       } else {
         memoryLeads = firestoreLeads;
         setLeads(firestoreLeads);
@@ -444,6 +472,150 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, []);
 
+  // Lazy-loading fetch function for full showroom inventory (Admin mode) with metadata-gated caching to completely prevent redundant scans
+  const fetchFullInventory = useCallback(async (force = false) => {
+    if (isFirebaseMock || !db) return;
+
+    // 1. Session check to avoid any storage read
+    if (!force && hasFullInventoryLoadedRef.current && vehiclesRef.current && vehiclesRef.current.length > 0) {
+      console.log('⚡ VehicleContext: [SESSION HIT] Full warehouse inventory already inside memory buffer.');
+      setVehicles(vehiclesRef.current);
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const now = Date.now();
+      const localMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
+      const localFullVehiclesStr = safeStorage.getItem('bombay_motors_full_vehicles');
+      const localLastCheckStr = safeStorage.getItem('bombay_motors_full_vehicles_last_meta_check');
+
+      const lastCheckTime = localLastCheckStr ? Number(localLastCheckStr) : memoryFullVehiclesLastMetaCheck;
+
+      // 2. Cooldown check: If checked in the last 5 minutes, load from local storage cache
+      if (!force && lastCheckTime && now - lastCheckTime < METADATA_COOLDOWN_MS && (memoryVehicles || (localFullVehiclesStr && localMetaStamp))) {
+        console.log('⚡ VehicleContext: [COOLDOWN ACTIVE] Full inventory verified recently. Loading locally.');
+        if (localFullVehiclesStr) {
+          try {
+            const parsed = JSON.parse(localFullVehiclesStr);
+            setVehicles(parsed);
+            memoryVehicles = parsed;
+            setHasFullInventoryLoaded(true);
+            setIsLoading(false);
+            return;
+          } catch (_) {}
+        }
+      }
+
+      // 3. Metadata check from server
+      console.log('⚡ VehicleContext: Verifying full inventory metadata with Firestore config/vehicles_meta...');
+      const metaDocRef = doc(db, 'config', 'vehicles_meta');
+      let remoteMeta: any = null;
+
+      try {
+        console.log("[FIRESTORE QUERY] config (vehicles_meta)");
+        const metaSnap = await getDoc(metaDocRef);
+        incrementReads(1);
+        if (metaSnap.exists()) {
+          remoteMeta = metaSnap.data();
+        }
+      } catch (metaErr) {
+        console.warn('VehicleContext: Vehicles meta timestamp doc unreachable:', metaErr);
+      }
+
+      // Update check timestamp
+      memoryFullVehiclesLastMetaCheck = now;
+      safeStorage.setItem('bombay_motors_full_vehicles_last_meta_check', String(now));
+
+      const currentLocalMetaStamp = safeStorage.getItem('bombay_motors_vehicles_last_server_update');
+      const currentLocalFullStr = safeStorage.getItem('bombay_motors_full_vehicles');
+
+      // 4. METADATA MATCH CHECK: If catalog is up to date, skip O(N) database read scan completely!
+      if (!force && remoteMeta && remoteMeta.lastUpdatedAt && remoteMeta.lastUpdatedAt === currentLocalMetaStamp && currentLocalFullStr) {
+        console.log('⚡ VehicleContext: Full showroom inventory is up to date (Metadata timestamp matches). Skipping database read scan.');
+        try {
+          const cachedFull = JSON.parse(currentLocalFullStr);
+          setVehicles(cachedFull);
+          memoryVehicles = cachedFull;
+          setHasFullInventoryLoaded(true);
+          logReadReductionReport(cachedFull.length, true);
+        } catch (_) {}
+        setIsLoading(false);
+        return;
+      }
+
+      // 5. CACHE MISS: Perform O(N) unlimited scan
+      console.log('⚡ VehicleContext: [CACHE MISS] Fetching full showroom inventory from database (Unlimited)...');
+      const vehiclesColRef = collection(db, 'vehicles');
+      console.log("[FIRESTORE QUERY] full vehicles (no limit)");
+      const snapshot = await getDocs(vehiclesColRef);
+      incrementReads(snapshot.size || 1);
+
+      const firestoreVehicles: Vehicle[] = [];
+      snapshot.forEach((docSnap) => {
+        firestoreVehicles.push(parseFirestoreVehicle(docSnap.data(), docSnap.id));
+      });
+
+      firestoreVehicles.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      setVehicles(firestoreVehicles);
+      memoryVehicles = firestoreVehicles;
+      setHasFullInventoryLoaded(true);
+
+      // Write results to full vehicles key
+      writeVehiclesToCache(firestoreVehicles, 'bombay_motors_full_vehicles');
+
+      const currentMetaStamp = remoteMeta?.lastUpdatedAt || new Date().toISOString();
+      if (!remoteMeta || !remoteMeta.lastUpdatedAt) {
+        await setDoc(metaDocRef, { lastUpdatedAt: currentMetaStamp });
+      }
+      safeStorage.setItem('bombay_motors_vehicles_last_server_update', currentMetaStamp);
+      logReadReductionReport(firestoreVehicles.length, false);
+
+    } catch (err) {
+      console.warn('VehicleContext: Could not fetch full showroom inventory:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Direct, single item getter (O(1) queries) to resolve direct links or un-cached products with exactly 1 document read
+  const getVehicleById = useCallback(async (id: string): Promise<Vehicle | null> => {
+    // 1. Memory check using Ref instead of state dependency
+    const found = vehiclesRef.current.find(v => v.id === id);
+    if (found) return found;
+
+    // 2. Offline / Mock fallback
+    if (isFirebaseMock || !db) return null;
+
+    // 3. Document fetch
+    try {
+      console.log(`⚡ VehicleContext: [CACHE MISS] Targeted lookup for vehicle ID: ${id}`);
+      const docRef = doc(db, 'vehicles', id);
+      console.log("[FIRESTORE QUERY] vehicles (single doc lookup)");
+      const docSnap = await getDoc(docRef);
+      incrementReads(1);
+
+      if (docSnap.exists()) {
+        const parsed = parseFirestoreVehicle(docSnap.data(), docSnap.id);
+        
+        // Optimistically put this in state lists so details components compile beautifully without missing records
+        setVehicles(prev => {
+          if (prev.some(v => v.id === id)) return prev;
+          return [parsed, ...prev];
+        });
+        return parsed;
+      }
+    } catch (err) {
+      console.warn(`VehicleContext: Error reading target single vehicle doc ${id}:`, err);
+    }
+    return null;
+  }, []);
+
   // Seed online database helper (manually or initially invoked)
   const seedDataIfNeeded = useCallback(async () => {
     if (isFirebaseMock || !db) return;
@@ -451,14 +623,17 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.log('VehicleContext: Seeding initial collections to Firestore...');
       for (const v of INITIAL_VEHICLES) {
         await setDoc(doc(db, 'vehicles', v.id), v);
+        incrementWrites(1);
       }
       for (const l of INITIAL_LEADS) {
         await setDoc(doc(db, 'leads', l.id), l);
+        incrementWrites(1);
       }
       // Initialize BOTH metadata stamps on Firestore to match seeding state
       const timestamp = new Date().toISOString();
       await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: timestamp });
       await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: timestamp });
+      incrementWrites(2);
       
       safeStorage.setItem('bombay_motors_vehicles_last_server_update', timestamp);
       safeStorage.setItem('bombay_motors_leads_last_server_update', timestamp);
@@ -492,6 +667,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Trigger server metadata timestamp update to bypass cached states for all clients instantly
         const newStamp = new Date().toISOString();
         await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+        incrementWrites(2);
         safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `vehicles/${newId}`);
@@ -520,6 +696,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           // Trigger server metadata timestamp update
           const newStamp = new Date().toISOString();
           await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+          incrementWrites(2);
           safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
         }
       } catch (err) {
@@ -542,6 +719,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Trigger server metadata timestamp update
         const newStamp = new Date().toISOString();
         await setDoc(doc(db, 'config', 'vehicles_meta'), { lastUpdatedAt: newStamp });
+        incrementWrites(2);
         safeStorage.setItem('bombay_motors_vehicles_last_server_update', newStamp);
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `vehicles/${id}`);
@@ -573,6 +751,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Trigger server metadata timestamp update
         const newStamp = new Date().toISOString();
         await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+        incrementWrites(2);
         safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `leads/${newId}`);
@@ -600,6 +779,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           // Trigger server metadata timestamp update
           const newStamp = new Date().toISOString();
           await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+          incrementWrites(2);
           safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
         }
       } catch (err) {
@@ -626,6 +806,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           // Trigger server metadata timestamp update
           const newStamp = new Date().toISOString();
           await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+          incrementWrites(2);
           safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
         }
       } catch (err) {
@@ -648,6 +829,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Trigger server metadata timestamp update
         const newStamp = new Date().toISOString();
         await setDoc(doc(db, 'config', 'leads_meta'), { lastUpdatedAt: newStamp });
+        incrementWrites(2);
         safeStorage.setItem('bombay_motors_leads_last_server_update', newStamp);
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `leads/${leadId}`);
@@ -669,7 +851,9 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isLoading,
       seedDataIfNeeded,
       fetchLeads,
-      isLeadsLoading
+      isLeadsLoading,
+      fetchFullInventory,
+      getVehicleById
     }}>
       {children}
     </VehicleContext.Provider>

@@ -25,22 +25,38 @@ import {
   Sparkles,
   Layers,
   Eye,
-  EyeOff
+  EyeOff,
+  Database,
+  Activity,
+  Wifi,
+  Check
 } from 'lucide-react';
+import { db, isFirebaseMock } from '../../firebase';
+import { subscribeToMetrics, resetMetrics, DatabaseMetrics } from '../../utils/metrics';
 
 export const DealerDashboard: React.FC = () => {
   const { user, signInWithGoogle, signInWithCredentials, signInDemoAdmin, signOutUser, isAdmin, isLoading: isAuthLoading } = useAuth();
-  const { vehicles, leads, fetchLeads } = useVehicles();
+  const { vehicles, leads, fetchLeads, fetchFullInventory } = useVehicles();
   const { siteConfig } = useSiteConfig();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
-  // Lazy-load Leads on-demand only for authorized administrators
+  // Live Firestore database metrics
+  const [dbMetrics, setDbMetrics] = React.useState<DatabaseMetrics>({ reads: 0, writes: 0 });
+
+  React.useEffect(() => {
+    return subscribeToMetrics((newMetrics) => {
+      setDbMetrics(newMetrics);
+    });
+  }, []);
+
+  // Lazy-load Leads and Full Inventory on-demand only for authorized administrators
   React.useEffect(() => {
     if (user && isAdmin) {
       fetchLeads();
+      fetchFullInventory();
     }
-  }, [user, isAdmin, fetchLeads]);
+  }, [user, isAdmin, fetchLeads, fetchFullInventory]);
 
   // Credential login states
   const [emailInput, setEmailInput] = React.useState('');
@@ -386,6 +402,44 @@ export const DealerDashboard: React.FC = () => {
           </div>
 
         </div>
+
+        {/* FIRESTORE LIVE METRICS MONITOR */}
+        <div className="bg-[#121214] border border-white/5 rounded-2xl p-6 mt-8">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5 pb-4 border-b border-white/[0.04]">
+            <div className="flex items-center gap-2.5">
+              <Database className="w-4 h-4 text-[#c5a059]" />
+              <h3 className="font-sans font-bold text-white uppercase text-xs tracking-wider">Live Database Reads & Writes</h3>
+            </div>
+            
+            <button
+              type="button"
+              onClick={() => {
+                resetMetrics();
+                showToast('Database performance metrics reset successfully.', 'success');
+              }}
+              className="px-3 py-1 bg-zinc-900 hover:bg-zinc-800 border border-white/5 hover:border-white/10 rounded font-mono text-[9px] uppercase tracking-wider text-zinc-400 hover:text-white transition-all cursor-pointer"
+            >
+              Reset Counters
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {/* Reads Counter */}
+            <div className="bg-zinc-950/60 p-4 rounded-xl border border-white/[0.02] flex flex-col justify-center">
+              <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest leading-none mb-1.5">Firestore Reads</div>
+              <div className="font-mono text-2xl font-bold text-[#c5a059] leading-tight">{dbMetrics.reads}</div>
+              <div className="text-[9px] text-zinc-500 font-sans mt-1">Document read requests during workspace active state</div>
+            </div>
+
+            {/* Writes Counter */}
+            <div className="bg-zinc-950/60 p-4 rounded-xl border border-white/[0.02] flex flex-col justify-center">
+              <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest leading-none mb-1.5">Firestore Writes</div>
+              <div className="font-mono text-2xl font-bold text-emerald-400 leading-tight">{dbMetrics.writes}</div>
+              <div className="text-[9px] text-zinc-500 font-sans mt-1">Updates, additions, and delete writes triggered locally</div>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   );
